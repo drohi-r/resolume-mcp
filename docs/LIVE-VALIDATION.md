@@ -23,6 +23,12 @@ Scope note:
   - `/api/v1/composition/decks/1`
 - Deck list is embedded inside `/api/v1/composition`
 - Layer groups are exposed as `layergroups` in the REST API, not `groups`
+- Selected-object read endpoints confirmed on this machine:
+  - `/api/v1/composition/layers/selected`
+  - `/api/v1/composition/clips/selected`
+- The following binary-visible paths returned `404` on this machine during safe live reads:
+  - `/api/v1/composition/layergroups/selected`
+  - `/api/v1/composition/layers/1/clips/active`
 - Advanced Output candidate HTTP paths probed on this machine returned `404`, including:
   - `/api/v1/advancedoutput`
   - `/api/v1/advancedoutput/screens`

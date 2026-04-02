@@ -20,6 +20,20 @@ Status:
 - playback preparation helpers in place for composition and layers, with composition transport control treated as build-dependent
 - playback monitoring and batch selection helpers in place
 - playback subscribe/unsubscribe bundles in place
+- source/media wrappers in place for clip open, openfile, insert, and thumbnail refresh workflows
+- effect-management wrappers in place for composition, layer, group, and clip scopes:
+  - add
+  - get
+  - video-effect move
+  - display-name rename
+- structural wrappers in place for:
+  - composition new/open/save/grow-to
+  - disconnect-all
+  - add/duplicate for layers, columns, groups, and decks
+  - deck open/close
+  - group add-layer, move-layer, and clear
+  - layer clearclips
+  - selected layer/group duplicate
 - Advanced Output screen and slice wrappers are present but currently experimental on this machine because the local Resolume 7 HTTP API returns `404` for the probed Advanced Output endpoints
 - Advanced Output XML tools are the current production-safe path on this machine:
   - summary
@@ -38,6 +52,7 @@ Status:
 - deck snapshot and audit helpers are live-verified against the current deck schema
 - deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields
 - column trigger/disconnect helpers in place
+- selected-object wrappers in place for currently exposed layer and clip selection/state surfaces, with some selected-group and active-clip paths remaining build-dependent on this machine
 - output screen/slice parameter-path helpers in place
 - output transform helper in place for common slice transform updates
 - composition/layer/clip parameter monitoring helpers in place

@@ -72,8 +72,49 @@ def _parse_json_list(value: str, *, field_name: str) -> list[Any]:
     return parsed
 
 
+def _optional_json_object(value: str, *, field_name: str) -> Any:
+    parsed = _parse_json(value)
+    if parsed is None:
+        return None
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{field_name} must decode to a JSON object.")
+    return parsed
+
+
 def _parameter_path_from_id(parameter_id: int) -> str:
     return f"/parameter/by-id/{parameter_id}"
+
+
+def _effect_kind_path(effect_kind: str) -> str:
+    normalized = (effect_kind or "").strip().lower()
+    if normalized not in {"audio", "video"}:
+        raise ValueError("effect_kind must be 'audio' or 'video'.")
+    return normalized
+
+
+def _effect_scope_path(scope: str, index: int | None = None, *, layer_index: int | None = None, clip_index: int | None = None) -> str:
+    normalized = (scope or "").strip().lower()
+    if normalized == "composition":
+        return "/composition"
+    if normalized == "layer":
+        if layer_index is None:
+            raise ValueError("layer_index is required for layer effect scope.")
+        return f"/composition/layers/{layer_index}"
+    if normalized == "group":
+        if index is None:
+            raise ValueError("group_index is required for group effect scope.")
+        return f"/composition/layergroups/{index}"
+    if normalized == "selected-layer":
+        return "/composition/layers/selected"
+    if normalized == "selected-group":
+        return "/composition/layergroups/selected"
+    if normalized == "clip":
+        if layer_index is None or clip_index is None:
+            raise ValueError("layer_index and clip_index are required for clip effect scope.")
+        return f"/composition/layers/{layer_index}/clips/{clip_index}"
+    if normalized == "selected-clip":
+        return "/composition/clips/selected"
+    raise ValueError("scope must be one of: composition, layer, selected-layer, group, selected-group, clip, selected-clip.")
 
 
 def _lookup_parameter_node(payload: Any, parameter_suffix: str, aliases: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -335,6 +376,34 @@ async def get_composition() -> str:
 
 
 @mcp.tool()
+async def new_composition(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/new", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_composition(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/open", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def save_composition(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/save", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def grow_composition_to(body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/grow-to", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
 async def get_composition_parameter(parameter_suffix: str) -> str:
     client = _client()
     result = await _parameter_action(
@@ -388,6 +457,12 @@ async def unsubscribe_composition_parameter(parameter_suffix: str) -> str:
 async def get_node(path: str, query_json: str = "") -> str:
     params = _parse_json(query_json)
     result = await _client().request("GET", path, params=params)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def disconnect_all() -> str:
+    result = await _client().request("POST", "/composition/disconnect-all")
     return _json_response(result)
 
 
@@ -708,6 +783,30 @@ async def list_decks() -> str:
 
 
 @mcp.tool()
+async def get_selected_layer() -> str:
+    result = await _client().request("GET", "/composition/layers/selected")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_selected_group() -> str:
+    result = await _client().request("GET", "/composition/layergroups/selected")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_selected_clip() -> str:
+    result = await _client().request("GET", "/composition/clips/selected")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_selected_active_clip() -> str:
+    result = await _client().request("GET", "/composition/layers/selected/clips/active")
+    return _json_response(result)
+
+
+@mcp.tool()
 async def list_output_screens() -> str:
     result = await _client().request("GET", "/advancedoutput/screens")
     return _json_response(result)
@@ -867,6 +966,20 @@ async def audit_all_output_screens() -> str:
 @mcp.tool()
 async def get_layer(layer_index: int) -> str:
     result = await _client().request("GET", f"/composition/layers/{layer_index}")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def duplicate_layer(layer_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/duplicate", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def add_layer(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/layers/add", body=body)
     return _json_response(result)
 
 
@@ -1089,14 +1202,90 @@ async def get_column(column_index: int) -> str:
 
 
 @mcp.tool()
+async def duplicate_column(column_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/columns/{column_index}/duplicate", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def add_column(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/columns/add", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
 async def get_group(group_index: int) -> str:
     result = await _client().request("GET", f"/composition/layergroups/{group_index}")
     return _json_response(result)
 
 
 @mcp.tool()
+async def duplicate_group(group_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layergroups/{group_index}/duplicate", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def add_group(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/layergroups/add", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def add_layer_to_group(group_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layergroups/{group_index}/add-layer", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def move_layer_to_group(group_index: int, body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layergroups/{group_index}/move-layer", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def clear_group(group_index: int) -> str:
+    result = await _client().request("POST", f"/composition/layergroups/{group_index}/clear")
+    return _json_response(result)
+
+
+@mcp.tool()
 async def get_deck(deck_index: int) -> str:
     result = await _client().request("GET", f"/composition/decks/{deck_index}")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def duplicate_deck(deck_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/decks/{deck_index}/duplicate", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def add_deck(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/decks/add", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_deck(deck_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/decks/{deck_index}/open", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def close_deck(deck_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/decks/{deck_index}/close", body=body)
     return _json_response(result)
 
 
@@ -1109,6 +1298,75 @@ async def list_clips(layer_index: int) -> str:
 @mcp.tool()
 async def get_clip(layer_index: int, clip_index: int) -> str:
     result = await _client().request("GET", f"/composition/layers/{layer_index}/clips/{clip_index}")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_active_clip(layer_index: int) -> str:
+    result = await _client().request("GET", f"/composition/layers/{layer_index}/clips/active")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_clip(layer_index: int, clip_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/open", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_clip_file(layer_index: int, clip_index: int, body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/openfile", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def insert_clip(layer_index: int, clip_index: int, body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/insert", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_clip_in_selected_slot(body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/clips/open", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_selected_clip(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/clips/selected/open", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def open_selected_clip_file(body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/clips/selected/openfile", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def insert_selected_clip(body_json: str) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/clips/selected/insert", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def update_clip_thumbnail(layer_index: int, clip_index: int, body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/thumbnail/update", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def update_selected_clip_thumbnail(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/clips/selected/thumbnail/update", body=body)
     return _json_response(result)
 
 
@@ -1866,6 +2124,18 @@ async def disconnect_clip(layer_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
+async def clear_clip(layer_index: int, clip_index: int) -> str:
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/clear")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def clear_selected_clip() -> str:
+    result = await _client().request("POST", "/composition/clips/selected/clear")
+    return _json_response(result)
+
+
+@mcp.tool()
 async def trigger_column(column_index: int) -> str:
     result = await _client().request("POST", f"/composition/columns/{column_index}/connect")
     return _json_response(result)
@@ -1890,6 +2160,24 @@ async def select_clip(layer_index: int, clip_index: int) -> str:
 @mcp.tool()
 async def clear_layer(layer_index: int) -> str:
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clear")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def clear_selected_layer() -> str:
+    result = await _client().request("POST", "/composition/layers/selected/clear")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def clear_layer_clips(layer_index: int) -> str:
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clearclips")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def clear_selected_layer_clips() -> str:
+    result = await _client().request("POST", "/composition/layers/selected/clearclips")
     return _json_response(result)
 
 
@@ -1922,6 +2210,26 @@ async def select_column(column_index: int) -> str:
 @mcp.tool()
 async def select_group(group_index: int) -> str:
     result = await _client().request("POST", f"/composition/layergroups/{group_index}/select")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def duplicate_selected_layer(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/layers/selected/duplicate", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def duplicate_selected_group(body_json: str = "") -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    result = await _client().request("POST", "/composition/layergroups/selected/duplicate", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def select_deck(deck_index: int) -> str:
+    result = await _client().request("POST", f"/composition/decks/{deck_index}/select")
     return _json_response(result)
 
 
@@ -2193,6 +2501,81 @@ async def trigger_deck_action(deck_index: int, parameter_suffix: str) -> str:
 async def reset_deck_parameter(deck_index: int, parameter_suffix: str) -> str:
     path = _join_parameter_path(f"/composition/decks/{deck_index}", parameter_suffix)
     result = await _client().websocket_action("reset", path)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def add_effect(
+    scope: str,
+    effect_kind: str,
+    *,
+    effect_index: int | None = None,
+    layer_index: int | None = None,
+    group_index: int | None = None,
+    clip_index: int | None = None,
+) -> str:
+    base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
+    kind = _effect_kind_path(effect_kind)
+    path = f"{base}/effects/{kind}/add"
+    if effect_index is not None:
+        path = f"{path}/{effect_index}"
+    result = await _client().request("POST", path)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_effect(
+    scope: str,
+    effect_kind: str,
+    effect_index: int,
+    *,
+    layer_index: int | None = None,
+    group_index: int | None = None,
+    clip_index: int | None = None,
+) -> str:
+    base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
+    kind = _effect_kind_path(effect_kind)
+    result = await _client().request("GET", f"{base}/effects/{kind}/{effect_index}")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def move_video_effect(
+    scope: str,
+    body_json: str,
+    *,
+    effect_index: int | None = None,
+    layer_index: int | None = None,
+    group_index: int | None = None,
+    clip_index: int | None = None,
+) -> str:
+    body = _optional_json_object(body_json, field_name="body_json")
+    base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
+    path = f"{base}/effects/video/move"
+    if effect_index is not None:
+        path = f"{path}/{effect_index}"
+    result = await _client().request("POST", path, body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def rename_effect(
+    scope: str,
+    effect_kind: str,
+    effect_index: int,
+    display_name: str,
+    *,
+    layer_index: int | None = None,
+    group_index: int | None = None,
+    clip_index: int | None = None,
+) -> str:
+    base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
+    kind = _effect_kind_path(effect_kind)
+    result = await _client().request(
+        "POST",
+        f"{base}/effects/{kind}/{effect_index}/set-display-name",
+        body={"displayName": display_name},
+    )
     return _json_response(result)
 
 

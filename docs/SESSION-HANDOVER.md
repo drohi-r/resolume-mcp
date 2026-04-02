@@ -8,7 +8,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 
 - Repo path: `/Users/Drohi/Projects/resolume-mcp`
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `100 passed`
+- Validation status: `128 passed`
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
 - Intended deployment environment: Windows media servers
@@ -27,17 +27,30 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 
 - Composition and playback:
   - composition overview and audit
+  - composition new/open/save/grow-to
+  - disconnect-all
   - layer snapshot and audit
   - clip snapshot and audit
+  - source/media helpers for clip open, openfile, insert, and thumbnail refresh
   - batch layer/column/clip selection helpers
+  - selected layer and selected clip readers
   - BPM control
   - composition transport control kept build-dependent because `transport/playing` was not exposed in the validated REST payload
   - clip trigger/disconnect helpers
   - batch clip trigger/disconnect helpers
+  - clip clear, selected clip clear, layer clearclips, and selected layer clearclips
   - layer prep and batch layer prep
   - playback prep helper
   - playback monitor helper
   - playback subscribe/unsubscribe helper
+  - add/duplicate helpers for layers, columns, groups, and decks
+  - deck open/close helpers
+  - group add-layer, move-layer, and clear helpers
+  - generic effect wrappers for composition, layer, group, and clip scopes:
+    - add
+    - get
+    - video move
+    - display-name rename
 
 - Decks:
   - deck list and single-deck read
@@ -48,6 +61,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - batch deck prep helper
   - deck monitor helper
   - deck subscribe/unsubscribe helpers
+  - deck select helper
   - validated live deck schema currently exposes selection and scroll state, not deck transport fields
 
 - Advanced Output:
@@ -94,6 +108,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 2. Decide whether to add controlled XML write/import helpers after confirming safe reload behavior.
 3. Add startup examples for the eventual MCP host/client integration path.
 4. Consider trimming bootstrap-heavy websocket output in named tools if operator-facing responses need to be cleaner.
+5. Re-validate build-dependent selected-group and active-clip paths on a Windows target or a different Resolume build.
 
 ## Notes
 
