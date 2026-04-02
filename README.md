@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="Resolume MCP" width="100%">
+</p>
+
 # Resolume MCP
 
 Private MCP server project for Resolume Arena/Avenue control.
