@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .advanced_output_xml import (
+    AdvancedOutputPreferences,
+    SliceInspectorPreferences,
+    backup_xml_file,
+    diff_xml_text,
+)
 from .client import ResolumeClient
 from .config import load_config
 
@@ -157,6 +164,14 @@ async def _resolved_get_or_error(
         }
 
 
+def _advanced_output_preferences() -> AdvancedOutputPreferences:
+    return AdvancedOutputPreferences.load(load_config().advanced_output_xml_path)
+
+
+def _slice_inspector_preferences() -> SliceInspectorPreferences:
+    return SliceInspectorPreferences.load(load_config().slices_xml_path)
+
+
 mcp = FastMCP(
     name="Resolume MCP",
     instructions=(
@@ -178,6 +193,9 @@ def get_server_config() -> str:
             "use_https": config.use_https,
             "http_base_url": config.http_base_url,
             "websocket_url": config.websocket_url,
+            "documents_root": config.documents_root,
+            "advanced_output_xml_path": config.advanced_output_xml_path,
+            "slices_xml_path": config.slices_xml_path,
         }
     )
 
@@ -368,6 +386,75 @@ async def get_node(path: str, query_json: str = "") -> str:
 async def get_advanced_output_tree(path: str = "/advancedoutput") -> str:
     result = await _client().request("GET", _normalize_output_path(path))
     return _json_response(result)
+
+
+@mcp.tool()
+def get_advanced_output_preferences_summary() -> str:
+    prefs = _advanced_output_preferences()
+    return _json_response(prefs.summary())
+
+
+@mcp.tool()
+def get_advanced_output_screen_xml(screen_index: int) -> str:
+    summary = _advanced_output_preferences().summary()
+    screens = summary.get("screens", [])
+    if not isinstance(screens, list) or screen_index < 0 or screen_index >= len(screens):
+        raise IndexError("screen_index is out of range for the current AdvancedOutput.xml.")
+    return _json_response(screens[screen_index])
+
+
+@mcp.tool()
+def get_advanced_output_slice_xml(screen_index: int, slice_index: int) -> str:
+    summary = _advanced_output_preferences().summary()
+    screens = summary.get("screens", [])
+    if not isinstance(screens, list) or screen_index < 0 or screen_index >= len(screens):
+        raise IndexError("screen_index is out of range for the current AdvancedOutput.xml.")
+    slices = screens[screen_index].get("slices", [])
+    if not isinstance(slices, list) or slice_index < 0 or slice_index >= len(slices):
+        raise IndexError("slice_index is out of range for the selected screen in AdvancedOutput.xml.")
+    return _json_response(slices[slice_index])
+
+
+@mcp.tool()
+def get_slices_inspector_summary() -> str:
+    prefs = _slice_inspector_preferences()
+    return _json_response(prefs.summary())
+
+
+@mcp.tool()
+def backup_advanced_output_preferences(backup_dir: str = "") -> str:
+    config = load_config()
+    target_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    advanced_output_backup = backup_xml_file(config.advanced_output_xml_path, target_dir)
+    slices_backup = backup_xml_file(config.slices_xml_path, target_dir)
+    return _json_response(
+        {
+            "backup_dir": target_dir,
+            "advanced_output_xml": advanced_output_backup,
+            "slices_xml": slices_backup,
+        }
+    )
+
+
+@mcp.tool()
+def diff_advanced_output_preferences(other_xml_path: str) -> str:
+    current = _advanced_output_preferences()
+    other_path = Path(other_xml_path).expanduser()
+    other = AdvancedOutputPreferences.load(other_path)
+    diff = diff_xml_text(
+        current.raw_xml,
+        other.raw_xml,
+        current_name=str(current.path),
+        other_name=str(other_path),
+    )
+    return _json_response(
+        {
+            "current_path": str(current.path),
+            "other_path": str(other_path),
+            "diff_line_count": len(diff),
+            "diff": diff,
+        }
+    )
 
 
 @mcp.tool()
@@ -2163,6 +2250,7 @@ def api_primitives() -> str:
                 "Use WebSocket verbs for parameter get/set/trigger/reset/subscribe actions.",
                 "Use OSC when you need direct address-based control compatible with Resolume's OSC listener.",
                 "Use the output screen/slice parameter helpers when operating Advanced Output without hand-building long paths, but treat them as experimental until your target Resolume build exposes Advanced Output over HTTP.",
+                "Use the Advanced Output XML tools for read-only inspection, backup, and diff on systems where Advanced Output is persisted to XML but not exposed over the live HTTP API.",
                 "Use composition/layer/clip parameter helpers for live monitoring and operator-driven parameter workflows.",
             ],
         }

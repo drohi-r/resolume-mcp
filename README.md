@@ -14,11 +14,18 @@ Status:
 - generic REST / WebSocket / OSC foundation in place
 - live validation completed against the local Resolume instance on this machine
 - composition, layer, clip, and deck helpers now resolve live websocket parameters through `/parameter/by-id/{id}` where the local REST schema exposes them
+- Advanced Output XML inspection, backup, and diff tools are now in place for local Resolume installations that persist output setup to XML
 - clip audit, batch clip trigger/disconnect, and batch layer clear helpers in place
 - playback preparation helpers in place for composition and layers, with composition transport control treated as build-dependent
 - playback monitoring and batch selection helpers in place
 - playback subscribe/unsubscribe bundles in place
 - Advanced Output screen and slice wrappers are present but currently experimental on this machine because the local Resolume 7 HTTP API returns `404` for the probed Advanced Output endpoints
+- Advanced Output XML tools are the current production-safe path on this machine:
+  - summary
+  - screen inspection
+  - slice inspection
+  - backup
+  - diff
 - deck access and deck-parameter helpers in place
 - deck snapshot and audit helpers are live-verified against the current deck schema
 - deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields

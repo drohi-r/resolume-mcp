@@ -77,9 +77,11 @@ Playback:
 
 Output:
 
-1. Verify first that your local Resolume build actually exposes Advanced Output over HTTP.
-2. If it does, start with `audit_all_output_screens`
-3. Then use `get_output_screen_snapshot` and `get_output_slice_snapshot`
+1. Start with `get_advanced_output_preferences_summary`
+2. Then use `get_advanced_output_screen_xml`
+3. Then use `get_advanced_output_slice_xml`
+4. Use `backup_advanced_output_preferences` before any manual output changes
+5. Use `diff_advanced_output_preferences` to compare setups safely
 
 Decks:
 
@@ -103,6 +105,7 @@ Notes:
 
 - On the validated local Resolume 7 build used for this repo, `set_composition_playing` is treated as build-dependent because composition transport was not exposed in the REST payload.
 - On that same build, Advanced Output HTTP endpoints returned `404`, so output helpers should be treated as experimental until your target machine exposes them.
+- On that same build, Advanced Output is persisted to XML under `~/Documents/Resolume Arena/Preferences`, and the repo now has read-only XML tools for that surface.
 - Deck helpers are live-verified for selection and scroll state; they do not currently assume hidden deck transport controls.
 
 ## Design note

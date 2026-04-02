@@ -13,6 +13,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 - Live API reality on this machine:
   - composition, layer, clip, and deck parameter helpers are now aligned to `/parameter/by-id/{id}`
   - Advanced Output HTTP paths currently return `404`
+  - Advanced Output is persisted locally as XML in `~/Documents/Resolume Arena/Preferences`
 
 ## Current capability shape
 
@@ -60,6 +61,12 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - screen prep and multi-screen prep
   - all-screen audit
   - current status on this machine: experimental, because the local Resolume 7 API does not expose Advanced Output HTTP paths
+  - XML-backed tools now available:
+    - summary
+    - screen inspection
+    - slice inspection
+    - backup
+    - diff
 
 ## Local skills currently present
 
@@ -74,8 +81,8 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 ## Recommended next work
 
 1. Re-validate all Advanced Output wrappers against a build/control path that actually exposes Advanced Output.
-2. Add startup examples for the eventual MCP host/client integration path.
-3. Decide when to commit and initialize remote/private git hosting for this repo.
+2. Decide whether to add controlled XML write/import helpers after confirming safe reload behavior.
+3. Add startup examples for the eventual MCP host/client integration path.
 4. Consider trimming bootstrap-heavy websocket output in named tools if operator-facing responses need to be cleaner.
 
 ## Notes

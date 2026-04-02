@@ -25,6 +25,12 @@ def test_websocket_url_uses_api_v1():
     assert ResolumeConfig().websocket_url == "ws://127.0.0.1:8080/api/v1"
 
 
+def test_config_exposes_advanced_output_xml_paths():
+    config = ResolumeConfig()
+    assert config.advanced_output_xml_path.endswith("/Documents/Resolume Arena/Preferences/AdvancedOutput.xml")
+    assert config.slices_xml_path.endswith("/Documents/Resolume Arena/Preferences/slices.xml")
+
+
 @pytest.mark.asyncio
 async def test_drain_websocket_bootstrap_reads_initial_messages():
     class FakeWebSocket:
