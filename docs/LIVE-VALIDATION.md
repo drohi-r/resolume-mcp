@@ -38,6 +38,7 @@ Scope note:
 - The following binary-visible paths returned `404` on this machine during safe live reads:
   - `/api/v1/composition/layergroups/selected`
   - `/api/v1/composition/layers/1/clips/active`
+  - `/api/v1/composition/layergroups/1/columns/1`
 - Advanced Output candidate HTTP paths probed on this machine returned `404`, including:
   - `/api/v1/advancedoutput`
   - `/api/v1/advancedoutput/screens`
@@ -103,3 +104,8 @@ Scope note:
   - `effects/video/add/{offset}` works when the request body is sent as raw `text/plain` with an effect URI such as `effect:///video/Blow`
   - `effects/video/{offset}` delete works on the same slot after the add test
   - `GET /effects`, `GET /sources`, and `POST /files` all work and are now wrapped by named tools
+- Selected clip reads still work on this machine:
+  - `/api/v1/composition/clips/selected`
+- Selected layergroup and group-column endpoints are still not exposed on this build:
+  - `/api/v1/composition/layergroups/selected`
+  - `/api/v1/composition/layergroups/{group}/columns/{column}`

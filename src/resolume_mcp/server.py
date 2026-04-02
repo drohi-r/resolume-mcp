@@ -1428,6 +1428,12 @@ async def clear_group(group_index: int) -> str:
 
 
 @mcp.tool()
+async def clear_selected_group() -> str:
+    result = await _client().request("POST", "/composition/layergroups/selected/clear")
+    return _json_response(result)
+
+
+@mcp.tool()
 async def get_deck(deck_index: int) -> str:
     result = await _client().request("GET", f"/composition/decks/{deck_index}")
     return _json_response(result)
@@ -1571,9 +1577,21 @@ async def update_clip_thumbnail(layer_index: int, clip_index: int, body_json: st
 
 
 @mcp.tool()
+async def revert_clip_thumbnail(layer_index: int, clip_index: int) -> str:
+    result = await _client().request("DELETE", f"/composition/layers/{layer_index}/clips/{clip_index}/thumbnail")
+    return _json_response(result)
+
+
+@mcp.tool()
 async def update_selected_clip_thumbnail(body_json: str = "") -> str:
     body = _optional_json_object(body_json, field_name="body_json")
     result = await _client().request("POST", "/composition/clips/selected/thumbnail/update", body=body)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def revert_selected_clip_thumbnail() -> str:
+    result = await _client().request("DELETE", "/composition/clips/selected/thumbnail")
     return _json_response(result)
 
 
@@ -2338,6 +2356,12 @@ async def trigger_clip(layer_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
+async def trigger_selected_clip() -> str:
+    result = await _client().request("POST", "/composition/clips/selected/connect")
+    return _json_response(result)
+
+
+@mcp.tool()
 async def disconnect_clip(layer_index: int, clip_index: int) -> str:
     client = _client()
     before_state = await _clip_connection_state(client, layer_index, clip_index)
@@ -2353,6 +2377,26 @@ async def disconnect_clip(layer_index: int, clip_index: int) -> str:
             "after_state": after_state,
             "disconnected": disconnected,
             "note": None if disconnected else "Clip remained connected after disconnect request on this Resolume build.",
+        }
+    )
+
+
+@mcp.tool()
+async def disconnect_selected_clip() -> str:
+    client = _client()
+    before_payload = await client.request("GET", "/composition/clips/selected")
+    before_state = _extract_body(before_payload).get("connected", {}).get("value") if isinstance(_extract_body(before_payload), dict) else None
+    response = await client.request("POST", "/composition/clips/selected/connect", body=False)
+    after_payload = await client.request("GET", "/composition/clips/selected")
+    after_state = _extract_body(after_payload).get("connected", {}).get("value") if isinstance(_extract_body(after_payload), dict) else None
+    disconnected = after_state in {"Disconnected", "Empty"}
+    return _json_response(
+        {
+            "response": response,
+            "before_state": before_state,
+            "after_state": after_state,
+            "disconnected": disconnected,
+            "note": None if disconnected else "Selected clip remained connected after disconnect request on this Resolume build.",
         }
     )
 
@@ -2402,6 +2446,24 @@ async def trigger_column(column_index: int) -> str:
 @mcp.tool()
 async def disconnect_column(column_index: int) -> str:
     result = await _client().request("POST", f"/composition/columns/{column_index}/connect", body=False)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_group_column(group_index: int, column_index: int) -> str:
+    result = await _client().request("GET", f"/composition/layergroups/{group_index}/columns/{column_index}")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def trigger_group_column(group_index: int, column_index: int) -> str:
+    result = await _client().request("POST", f"/composition/layergroups/{group_index}/columns/{column_index}/connect")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def select_group_column(group_index: int, column_index: int) -> str:
+    result = await _client().request("POST", f"/composition/layergroups/{group_index}/columns/{column_index}/select")
     return _json_response(result)
 
 

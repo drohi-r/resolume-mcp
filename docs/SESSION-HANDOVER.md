@@ -8,7 +8,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 
 - Repo path: `/Users/Drohi/Projects/resolume-mcp`
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `141 passed`
+- Validation status: `149 passed`
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
 - Intended deployment environment: Windows media servers
@@ -26,6 +26,8 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - `effects/video/add/{offset}` is now live-proven on a temporary inserted slot when sent as raw `text/plain effect:///...`
   - clip-effect delete by grid position is also live-proven on the same slot
   - product, effects, sources, and file-info discovery endpoints are live-proven and now wrapped by named tools
+  - selected-clip trigger/disconnect and thumbnail-revert helpers are now wrapped
+  - selected-layergroup and group-column endpoints still return `404` on this mac build, so those helpers are repo-tested but not live-proven here
   - Advanced Output HTTP paths currently return `404`
   - Advanced Output is persisted locally as XML in `~/Documents/Resolume Arena/Preferences`
   - those XML path findings are macOS-specific and should be reconfigured or revalidated on Windows hosts
@@ -45,11 +47,13 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - clip snapshot and audit
   - source/media helpers for clip open, openfile, insert, and thumbnail refresh
   - product/effects/sources/files discovery helpers
+  - thumbnail revert helpers for clip and selected clip
   - batch layer/column/clip selection helpers
   - selected layer and selected clip readers
   - BPM control
   - composition transport control kept build-dependent because `transport/playing` was not exposed in the validated REST payload
   - clip trigger/disconnect helpers
+  - selected clip trigger/disconnect helpers
   - batch clip trigger/disconnect helpers
   - clip clear, selected clip clear, layer clearclips, and selected layer clearclips
   - layer prep and batch layer prep
@@ -59,6 +63,8 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - add/duplicate helpers for layers, columns, groups, and decks
   - deck open/close helpers
   - group add-layer, move-layer, and clear helpers
+  - selected group clear helper
+  - group-column get/select/connect helpers
   - generic effect wrappers for composition, layer, group, and clip scopes:
     - add
     - remove

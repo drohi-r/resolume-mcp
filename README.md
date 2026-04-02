@@ -22,6 +22,7 @@ Status:
 - playback monitoring and batch selection helpers in place
 - playback subscribe/unsubscribe bundles in place
 - source/media wrappers in place for clip open, openfile, insert, and thumbnail refresh workflows
+- thumbnail revert helpers in place for clip and selected clip
 - `open` is live-proven on this build when sent as raw `text/plain file:///...`
 - effect-management wrappers in place for composition, layer, group, and clip scopes:
   - add
@@ -35,6 +36,8 @@ Status:
   - add/duplicate for layers, columns, groups, and decks
   - deck open/close
   - group add-layer, move-layer, and clear
+  - selected group clear
+  - group-column get/select/connect
   - layer clearclips
   - selected layer/group duplicate
 - Advanced Output screen and slice wrappers are present but currently experimental on this machine because the local Resolume 7 HTTP API returns `404` for the probed Advanced Output endpoints
@@ -56,6 +59,7 @@ Status:
 - deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields
 - column trigger/disconnect helpers in place
 - selected-object wrappers in place for currently exposed layer and clip selection/state surfaces, with some selected-group and active-clip paths remaining build-dependent on this machine
+- selected-clip trigger/disconnect helpers are now wrapped
 - clip effect add and delete are now live-proven on a disposable slot when sent with raw `text/plain` effect URIs
 - output screen/slice parameter-path helpers in place
 - output transform helper in place for common slice transform updates

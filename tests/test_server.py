@@ -1999,6 +1999,20 @@ async def test_add_group(mock_client_factory):
 
 @pytest.mark.asyncio
 @patch("resolume_mcp.server._client")
+async def test_clear_selected_group(mock_client_factory):
+    from resolume_mcp.server import clear_selected_group
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layergroups/selected/clear"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await clear_selected_group())
+    assert payload["path"] == "/api/v1/composition/layergroups/selected/clear"
+    fake.request.assert_awaited_once_with("POST", "/composition/layergroups/selected/clear")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
 async def test_move_layer_to_group(mock_client_factory):
     from resolume_mcp.server import move_layer_to_group
 
@@ -2025,6 +2039,48 @@ async def test_clear_layer_clips(mock_client_factory):
 
 @pytest.mark.asyncio
 @patch("resolume_mcp.server._client")
+async def test_get_group_column(mock_client_factory):
+    from resolume_mcp.server import get_group_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layergroups/1/columns/2"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await get_group_column(1, 2))
+    assert payload["path"] == "/api/v1/composition/layergroups/1/columns/2"
+    fake.request.assert_awaited_once_with("GET", "/composition/layergroups/1/columns/2")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_trigger_group_column(mock_client_factory):
+    from resolume_mcp.server import trigger_group_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layergroups/1/columns/2/connect"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await trigger_group_column(1, 2))
+    assert payload["path"] == "/api/v1/composition/layergroups/1/columns/2/connect"
+    fake.request.assert_awaited_once_with("POST", "/composition/layergroups/1/columns/2/connect")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_select_group_column(mock_client_factory):
+    from resolume_mcp.server import select_group_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layergroups/1/columns/2/select"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await select_group_column(1, 2))
+    assert payload["path"] == "/api/v1/composition/layergroups/1/columns/2/select"
+    fake.request.assert_awaited_once_with("POST", "/composition/layergroups/1/columns/2/select")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
 async def test_disconnect_all(mock_client_factory):
     from resolume_mcp.server import disconnect_all
 
@@ -2047,6 +2103,67 @@ async def test_select_deck(mock_client_factory):
 
     payload = json.loads(await select_deck(2))
     assert payload["path"] == "/api/v1/composition/decks/2/select"
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_revert_clip_thumbnail(mock_client_factory):
+    from resolume_mcp.server import revert_clip_thumbnail
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/1/clips/2/thumbnail"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await revert_clip_thumbnail(1, 2))
+    assert payload["path"] == "/api/v1/composition/layers/1/clips/2/thumbnail"
+    fake.request.assert_awaited_once_with("DELETE", "/composition/layers/1/clips/2/thumbnail")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_revert_selected_clip_thumbnail(mock_client_factory):
+    from resolume_mcp.server import revert_selected_clip_thumbnail
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/clips/selected/thumbnail"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await revert_selected_clip_thumbnail())
+    assert payload["path"] == "/api/v1/composition/clips/selected/thumbnail"
+    fake.request.assert_awaited_once_with("DELETE", "/composition/clips/selected/thumbnail")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_trigger_selected_clip(mock_client_factory):
+    from resolume_mcp.server import trigger_selected_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/clips/selected/connect"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await trigger_selected_clip())
+    assert payload["path"] == "/api/v1/composition/clips/selected/connect"
+    fake.request.assert_awaited_once_with("POST", "/composition/clips/selected/connect")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_selected_clip_reports_verified_state(mock_client_factory):
+    from resolume_mcp.server import disconnect_selected_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"connected": {"value": "Connected"}}},
+        {"ok": True, "path": "/api/v1/composition/clips/selected/connect"},
+        {"body": {"connected": {"value": "Connected"}}},
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_selected_clip())
+    assert payload["before_state"] == "Connected"
+    assert payload["after_state"] == "Connected"
+    assert payload["disconnected"] is False
 
 
 @pytest.mark.asyncio
