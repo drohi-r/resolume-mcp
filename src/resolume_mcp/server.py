@@ -428,6 +428,69 @@ def _slice_inspector_preferences() -> SliceInspectorPreferences:
     return SliceInspectorPreferences.load(load_config().slices_xml_path)
 
 
+async def _parameter_tool_impl(
+    scope_path: str,
+    action: str,
+    parameter_suffix: str,
+    value: Any = None,
+    aliases: tuple[str, ...] = (),
+) -> str:
+    client = _client()
+    kwargs: dict[str, Any] = {
+        "action": action,
+        "rest_path": scope_path,
+        "parameter_suffix": parameter_suffix,
+        "aliases": aliases,
+    }
+    if value is not None:
+        kwargs["value"] = value
+    result = await _parameter_action(client, **kwargs)
+    return _json_response(result)
+
+
+async def _output_websocket_tool_impl(action: str, path: str, value: Any = None) -> str:
+    kwargs: dict[str, Any] = {}
+    if value is not None:
+        kwargs["value"] = value
+    result = await _client().websocket_action(action, path, **kwargs)
+    return _json_response(result)
+
+
+def _parse_playback_targets(layer_indices_json: str, clip_pairs_json: str) -> tuple[list[Any], list[dict[str, Any]]]:
+    layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json") if layer_indices_json.strip() else []
+    clip_pairs: list[dict[str, Any]] = []
+    if clip_pairs_json.strip():
+        clip_pairs = _parse_json_list(clip_pairs_json, field_name="clip_pairs_json")
+        for pair in clip_pairs:
+            if not isinstance(pair, dict) or "layer_index" not in pair or "clip_index" not in pair:
+                raise ValueError("Each clip pair must include layer_index and clip_index.")
+    return layer_indices, clip_pairs
+
+
+async def _playback_state_bulk_action(action: str, layer_indices: list[Any], clip_pairs: list[dict[str, Any]]) -> list[Any]:
+    client = _client()
+    results: list[Any] = []
+    results.append(await _parameter_action(client, action=action, rest_path="/composition", parameter_suffix="tempocontroller/tempo"))
+    for li in layer_indices:
+        base = f"/composition/layers/{li}"
+        results.append(await _parameter_action(client, action=action, rest_path=base, parameter_suffix="video/opacity"))
+        results.append(await _parameter_action(client, action=action, rest_path=base, parameter_suffix="bypassed"))
+    for pair in clip_pairs:
+        base = f"/composition/layers/{pair['layer_index']}/clips/{pair['clip_index']}"
+        for suffix in ("connected", "transport/speed", "transport/position"):
+            aliases = ("transport/controls/speed",) if suffix == "transport/speed" else ()
+            results.append(await _parameter_action(client, action=action, rest_path=base, parameter_suffix=suffix, aliases=aliases))
+    return results
+
+
+async def _fetch_parameters(client: ResolumeClient, rest_path: str, suffixes: list[str], aliases_map: dict[str, tuple[str, ...]] | None = None) -> dict[str, Any]:
+    aliases_map = aliases_map or {}
+    results: dict[str, Any] = {}
+    for suffix in suffixes:
+        results[suffix] = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix=suffix, aliases=aliases_map.get(suffix, ()))
+    return results
+
+
 mcp = FastMCP(
     name="Resolume MCP",
     instructions=(
@@ -611,52 +674,22 @@ async def grow_composition_to(body_json: str) -> str:
 
 @mcp.tool()
 async def get_composition_parameter(parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="get",
-        rest_path="/composition",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl("/composition", "get", parameter_suffix)
 
 
 @mcp.tool()
 async def set_composition_parameter(parameter_suffix: str, value_json: str) -> str:
-    value = _parse_json(value_json)
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="set",
-        rest_path="/composition",
-        parameter_suffix=parameter_suffix,
-        value=value,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl("/composition", "set", parameter_suffix, value=_parse_json(value_json))
 
 
 @mcp.tool()
 async def subscribe_composition_parameter(parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="subscribe",
-        rest_path="/composition",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl("/composition", "subscribe", parameter_suffix)
 
 
 @mcp.tool()
 async def unsubscribe_composition_parameter(parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="unsubscribe",
-        rest_path="/composition",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl("/composition", "unsubscribe", parameter_suffix)
 
 
 @mcp.tool()
@@ -1246,30 +1279,22 @@ async def get_composition_overview() -> str:
 @mcp.tool()
 async def get_layer_snapshot(layer_index: int) -> str:
     client = _client()
-    layer = await client.request("GET", f"/composition/layers/{layer_index}")
+    rest_path = f"/composition/layers/{layer_index}"
+    layer = await client.request("GET", rest_path)
     clips = await _get_embedded_collection(
         client,
-        direct_path=f"/composition/layers/{layer_index}/clips",
-        fallback_path=f"/composition/layers/{layer_index}",
+        direct_path=f"{rest_path}/clips",
+        fallback_path=rest_path,
         collection_key="clips",
     )
-    opacity = await _resolved_get_or_error(
-        client,
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix="video/opacity",
-    )
-    bypassed = await _resolved_get_or_error(
-        client,
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix="bypassed",
-    )
+    params = await _fetch_parameters(client, rest_path, ["video/opacity", "bypassed"])
     return _json_response(
         {
             "layer_index": layer_index,
             "layer": layer,
             "clips": clips,
-            "opacity": opacity,
-            "bypassed": bypassed,
+            "opacity": params["video/opacity"],
+            "bypassed": params["bypassed"],
         }
     )
 
@@ -1411,52 +1436,22 @@ async def audit_composition() -> str:
 
 @mcp.tool()
 async def get_layer_parameter(layer_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="get",
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "get", parameter_suffix)
 
 
 @mcp.tool()
 async def set_layer_parameter(layer_index: int, parameter_suffix: str, value_json: str) -> str:
-    value = _parse_json(value_json)
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="set",
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix=parameter_suffix,
-        value=value,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "set", parameter_suffix, value=_parse_json(value_json))
 
 
 @mcp.tool()
 async def subscribe_layer_parameter(layer_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="subscribe",
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "subscribe", parameter_suffix)
 
 
 @mcp.tool()
 async def unsubscribe_layer_parameter(layer_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="unsubscribe",
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "unsubscribe", parameter_suffix)
 
 
 @mcp.tool()
@@ -1696,24 +1691,20 @@ async def get_clip_snapshot(layer_index: int, clip_index: int) -> str:
     client = _client()
     rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
     clip = await client.request("GET", rest_path)
-    connected = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="connected")
-    selected = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="selected")
-    speed = await _resolved_get_or_error(
-        client,
-        rest_path=rest_path,
-        parameter_suffix="transport/speed",
-        aliases=("transport/controls/speed",),
+    params = await _fetch_parameters(
+        client, rest_path,
+        ["connected", "transport/speed", "selected", "transport/position"],
+        aliases_map={"transport/speed": ("transport/controls/speed",)},
     )
-    position = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="transport/position")
     return _json_response(
         {
             "layer_index": layer_index,
             "clip_index": clip_index,
             "clip": clip,
-            "connected": connected,
-            "selected": selected,
-            "speed": speed,
-            "position": position,
+            "connected": params["connected"],
+            "selected": params["selected"],
+            "speed": params["transport/speed"],
+            "position": params["transport/position"],
         }
     )
 
@@ -2033,126 +2024,16 @@ async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: 
 
 @mcp.tool()
 async def subscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
-    layer_indices: list[Any] = []
-    if layer_indices_json.strip():
-        layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
-
-    clip_pairs: list[Any] = []
-    if clip_pairs_json.strip():
-        clip_pairs = _parse_json_list(clip_pairs_json, field_name="clip_pairs_json")
-        for pair in clip_pairs:
-            if not isinstance(pair, dict) or "layer_index" not in pair or "clip_index" not in pair:
-                raise ValueError("Each clip pair must include layer_index and clip_index.")
-
-    client = _client()
-    results: list[dict[str, Any]] = []
-
-    results.append(
-        await _parameter_action(
-            client,
-            action="subscribe",
-            rest_path="/composition",
-            parameter_suffix="tempocontroller/tempo",
-        )
-    )
-
-    if layer_indices:
-        for layer_index in layer_indices:
-            rest_path = f"/composition/layers/{layer_index}"
-            for suffix in ["video/opacity", "bypassed"]:
-                results.append(
-                    await _parameter_action(
-                        client,
-                        action="subscribe",
-                        rest_path=rest_path,
-                        parameter_suffix=suffix,
-                    )
-                )
-
-    if clip_pairs:
-        for pair in clip_pairs:
-            layer_index = pair["layer_index"]
-            clip_index = pair["clip_index"]
-            rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
-            parameter_specs = [
-                ("connected", ()),
-                ("transport/speed", ("transport/controls/speed",)),
-                ("transport/position", ()),
-            ]
-            for suffix, aliases in parameter_specs:
-                results.append(
-                    await _parameter_action(
-                        client,
-                        action="subscribe",
-                        rest_path=rest_path,
-                        parameter_suffix=suffix,
-                        aliases=aliases,
-                    )
-                )
-
-    return _json_response({"results": results})
+    layer_indices, clip_pairs = _parse_playback_targets(layer_indices_json, clip_pairs_json)
+    results = await _playback_state_bulk_action("subscribe", layer_indices, clip_pairs)
+    return _json_response({"action": "subscribe", "results": results})
 
 
 @mcp.tool()
 async def unsubscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
-    layer_indices: list[Any] = []
-    if layer_indices_json.strip():
-        layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
-
-    clip_pairs: list[Any] = []
-    if clip_pairs_json.strip():
-        clip_pairs = _parse_json_list(clip_pairs_json, field_name="clip_pairs_json")
-        for pair in clip_pairs:
-            if not isinstance(pair, dict) or "layer_index" not in pair or "clip_index" not in pair:
-                raise ValueError("Each clip pair must include layer_index and clip_index.")
-
-    client = _client()
-    results: list[dict[str, Any]] = []
-
-    results.append(
-        await _parameter_action(
-            client,
-            action="unsubscribe",
-            rest_path="/composition",
-            parameter_suffix="tempocontroller/tempo",
-        )
-    )
-
-    if layer_indices:
-        for layer_index in layer_indices:
-            rest_path = f"/composition/layers/{layer_index}"
-            for suffix in ["video/opacity", "bypassed"]:
-                results.append(
-                    await _parameter_action(
-                        client,
-                        action="unsubscribe",
-                        rest_path=rest_path,
-                        parameter_suffix=suffix,
-                    )
-                )
-
-    if clip_pairs:
-        for pair in clip_pairs:
-            layer_index = pair["layer_index"]
-            clip_index = pair["clip_index"]
-            rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
-            parameter_specs = [
-                ("connected", ()),
-                ("transport/speed", ("transport/controls/speed",)),
-                ("transport/position", ()),
-            ]
-            for suffix, aliases in parameter_specs:
-                results.append(
-                    await _parameter_action(
-                        client,
-                        action="unsubscribe",
-                        rest_path=rest_path,
-                        parameter_suffix=suffix,
-                        aliases=aliases,
-                    )
-                )
-
-    return _json_response({"results": results})
+    layer_indices, clip_pairs = _parse_playback_targets(layer_indices_json, clip_pairs_json)
+    results = await _playback_state_bulk_action("unsubscribe", layer_indices, clip_pairs)
+    return _json_response({"action": "unsubscribe", "results": results})
 
 
 @mcp.tool()
@@ -2160,15 +2041,14 @@ async def get_deck_snapshot(deck_index: int) -> str:
     client = _client()
     rest_path = f"/composition/decks/{deck_index}"
     deck = await client.request("GET", rest_path)
-    selected = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="selected")
-    scrollx = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="scrollx")
+    params = await _fetch_parameters(client, rest_path, ["selected", "scrollx"])
     deck_body = _extract_body(deck)
     return _json_response(
         {
             "deck_index": deck_index,
             "deck": deck,
-            "selected": selected,
-            "scrollx": scrollx,
+            "selected": params["selected"],
+            "scrollx": params["scrollx"],
             "closed": deck_body.get("closed") if isinstance(deck_body, dict) else None,
             "notes": [
                 "The validated deck REST schema exposes selected and scrollx, but not deck transport fields."
@@ -2404,56 +2284,26 @@ async def audit_show_readiness() -> str:
 
 @mcp.tool()
 async def get_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="get",
-        rest_path=f"/composition/layers/{layer_index}/clips/{clip_index}",
-        parameter_suffix=parameter_suffix,
-        aliases=("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else (),
-    )
-    return _json_response(result)
+    aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "get", parameter_suffix, aliases=aliases)
 
 
 @mcp.tool()
 async def set_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str, value_json: str) -> str:
-    value = _parse_json(value_json)
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="set",
-        rest_path=f"/composition/layers/{layer_index}/clips/{clip_index}",
-        parameter_suffix=parameter_suffix,
-        value=value,
-        aliases=("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else (),
-    )
-    return _json_response(result)
+    aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "set", parameter_suffix, value=_parse_json(value_json), aliases=aliases)
 
 
 @mcp.tool()
 async def subscribe_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="subscribe",
-        rest_path=f"/composition/layers/{layer_index}/clips/{clip_index}",
-        parameter_suffix=parameter_suffix,
-        aliases=("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else (),
-    )
-    return _json_response(result)
+    aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "subscribe", parameter_suffix, aliases=aliases)
 
 
 @mcp.tool()
 async def unsubscribe_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="unsubscribe",
-        rest_path=f"/composition/layers/{layer_index}/clips/{clip_index}",
-        parameter_suffix=parameter_suffix,
-        aliases=("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else (),
-    )
-    return _json_response(result)
+    aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "unsubscribe", parameter_suffix, aliases=aliases)
 
 
 @mcp.tool()
@@ -2773,73 +2623,52 @@ async def select_deck(deck_index: int) -> str:
 
 @mcp.tool()
 async def set_output_parameter(path: str, value_json: str) -> str:
-    value = _parse_json(value_json)
-    result = await _client().websocket_action("set", _normalize_output_path(path), value=value)
-    return _json_response(result)
+    return await _output_websocket_tool_impl("set", _normalize_output_path(path), value=_parse_json(value_json))
 
 
 @mcp.tool()
 async def get_output_parameter(path: str) -> str:
-    result = await _client().websocket_action("get", _normalize_output_path(path))
-    return _json_response(result)
+    return await _output_websocket_tool_impl("get", _normalize_output_path(path))
 
 
 @mcp.tool()
 async def trigger_output_action(path: str) -> str:
-    result = await _client().websocket_action("trigger", _normalize_output_path(path))
-    return _json_response(result)
+    return await _output_websocket_tool_impl("trigger", _normalize_output_path(path))
 
 
 @mcp.tool()
 async def reset_output_parameter(path: str) -> str:
-    result = await _client().websocket_action("reset", _normalize_output_path(path))
-    return _json_response(result)
+    return await _output_websocket_tool_impl("reset", _normalize_output_path(path))
 
 
 @mcp.tool()
 async def subscribe_output_parameter(path: str) -> str:
-    result = await _client().websocket_action("subscribe", _normalize_output_path(path))
-    return _json_response(result)
+    return await _output_websocket_tool_impl("subscribe", _normalize_output_path(path))
 
 
 @mcp.tool()
 async def unsubscribe_output_parameter(path: str) -> str:
-    result = await _client().websocket_action("unsubscribe", _normalize_output_path(path))
-    return _json_response(result)
+    return await _output_websocket_tool_impl("unsubscribe", _normalize_output_path(path))
 
 
 @mcp.tool()
 async def subscribe_output_screen_parameter(screen_index: int, parameter_suffix: str) -> str:
-    path = _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix)
-    result = await _client().websocket_action("subscribe", path)
-    return _json_response(result)
+    return await _output_websocket_tool_impl("subscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix))
 
 
 @mcp.tool()
 async def unsubscribe_output_screen_parameter(screen_index: int, parameter_suffix: str) -> str:
-    path = _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix)
-    result = await _client().websocket_action("unsubscribe", path)
-    return _json_response(result)
+    return await _output_websocket_tool_impl("unsubscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix))
 
 
 @mcp.tool()
 async def subscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
-    path = _join_parameter_path(
-        f"/advancedoutput/screens/{screen_index}/slices/{slice_index}",
-        parameter_suffix,
-    )
-    result = await _client().websocket_action("subscribe", path)
-    return _json_response(result)
+    return await _output_websocket_tool_impl("subscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix))
 
 
 @mcp.tool()
 async def unsubscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
-    path = _join_parameter_path(
-        f"/advancedoutput/screens/{screen_index}/slices/{slice_index}",
-        parameter_suffix,
-    )
-    result = await _client().websocket_action("unsubscribe", path)
-    return _json_response(result)
+    return await _output_websocket_tool_impl("unsubscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix))
 
 
 @mcp.tool()
@@ -3004,28 +2833,12 @@ async def bypass_clip(layer_index: int, clip_index: int, bypassed: bool = True) 
 
 @mcp.tool()
 async def set_deck_parameter(deck_index: int, parameter_suffix: str, value_json: str) -> str:
-    value = _parse_json(value_json)
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="set",
-        rest_path=f"/composition/decks/{deck_index}",
-        parameter_suffix=parameter_suffix,
-        value=value,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl(f"/composition/decks/{deck_index}", "set", parameter_suffix, value=_parse_json(value_json))
 
 
 @mcp.tool()
 async def get_deck_parameter(deck_index: int, parameter_suffix: str) -> str:
-    client = _client()
-    result = await _parameter_action(
-        client,
-        action="get",
-        rest_path=f"/composition/decks/{deck_index}",
-        parameter_suffix=parameter_suffix,
-    )
-    return _json_response(result)
+    return await _parameter_tool_impl(f"/composition/decks/{deck_index}", "get", parameter_suffix)
 
 
 @mcp.tool()
