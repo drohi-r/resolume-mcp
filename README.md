@@ -4,92 +4,122 @@
 
 # Resolume MCP
 
-Private MCP server project for Resolume Arena/Avenue control.
+<p align="center">
+  <a href="https://github.com/drohi-r/resolume-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-orange?style=for-the-badge" alt="License"></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-blue?style=for-the-badge" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/MCP_Tools-206-9B59FF?style=for-the-badge" alt="206 MCP Tools">
+</p>
 
-Planned focus:
-- composition and transport control
-- layers, clips, columns, groups
-- advanced output: screens, slices, routing, output parameter control
-- playback triggers and parameter control
-- safe read/write separation
-- Resolume REST/OSC integration where appropriate
+An MCP server for [Resolume Arena and Avenue](https://resolume.com). Exposes 206 tools covering composition control, playback, Advanced Output management, and show recovery — so AI assistants can operate Resolume via REST, WebSocket, and OSC.
 
-Status:
-- generic REST / WebSocket / OSC foundation in place
-- live validation completed against the local Resolume instance on this machine
-- current live validation was performed on macOS, but the intended production targets are Windows media servers
-- composition, layer, clip, and deck helpers now resolve live websocket parameters through `/parameter/by-id/{id}` where the local REST schema exposes them
-- product, effects, sources, and file-info discovery helpers are now wrapped by named tools
-- Advanced Output XML inspection, backup, and diff tools are now in place for local Resolume installations that persist output setup to XML
-- clip audit, batch clip trigger/disconnect, and batch layer clear helpers in place
-- playback preparation helpers in place for composition and layers, with composition transport control treated as build-dependent
-- playback monitoring and batch selection helpers in place
-- playback subscribe/unsubscribe bundles in place
-- source/media wrappers in place for clip open, openfile, insert, and thumbnail refresh workflows
-- thumbnail revert helpers in place for clip and selected clip
-- `open` is live-proven on this build when sent as raw `text/plain file:///...`
-- effect-management wrappers in place for composition, layer, group, and clip scopes:
-  - add
-  - remove
-  - get
-  - video-effect move
-  - display-name rename
-- structural wrappers in place for:
-  - composition new/open/save/grow-to
-  - disconnect-all
-  - add/duplicate for layers, columns, groups, and decks
-  - deck open/close
-  - group add-layer, move-layer, and clear
-  - selected group clear
-  - group-column get/select/connect
-  - layer clearclips
-  - selected layer/group duplicate
-- Advanced Output screen and slice wrappers are present but currently experimental on this machine because the local Resolume 7 HTTP API returns `404` for the probed Advanced Output endpoints
-- Advanced Output XML tools are the current production-safe path on this machine:
-  - summary
-  - screen inspection
-  - slice inspection
-  - Windows path candidates
-  - local path probe
-  - backup
-  - diff
-  - export bundle
-  - preview restore
-  - backup-first restore
-  - guarded XML edits for screen name, slice name, and soft-edge power
-  - guarded XML edits for output device, input rect, output rect, and homography destination
-- deck access and deck-parameter helpers in place
-- deck snapshot and audit helpers are live-verified against the current deck schema
-- deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields
-- column trigger/disconnect helpers in place
-- selected-object wrappers in place for currently exposed layer and clip selection/state surfaces, with some selected-group and active-clip paths remaining build-dependent on this machine
-- selected-clip trigger/disconnect helpers are now wrapped
-- clip effect add and delete are now live-proven on a disposable slot when sent with raw `text/plain` effect URIs
-- output screen/slice parameter-path helpers in place
-- output transform helper in place for common slice transform updates
-- composition/layer/clip parameter monitoring helpers in place
-- output screen/slice subscribe helpers in place
-- output corner helper in place for common warp-style updates
-- batch output helpers in place for multi-screen and multi-slice updates
-- batch slice routing helper in place for fast Advanced Output input assignment
-- composition overview and layer/clip snapshot readers in place
-- output overview and screen/slice snapshot readers in place
-- composition audit and layer audit helpers in place
-- output screen audit and all-screen audit helpers in place
-- output preparation helper in place for fast screen enable/unbypass/opacity setup
-- multi-screen preparation helper in place
-- show-readiness audit helper in place
+Built for live production. Every destructive operation requires explicit confirmation. Read operations are always safe.
 
-Local skill layer:
-- `advanced-output-setup`
-- `deck-control-and-inspection`
-- `festival-recovery-fast`
-- `output-routing-festival`
-- `output-warp-alignment`
-- `playback-prep-and-busking`
-- `show-recovery-and-triage`
+## What it does
 
-Internal docs:
-- `docs/GETTING-STARTED.md`
-- `docs/LIVE-VALIDATION.md`
-- `docs/SESSION-HANDOVER.md`
+| Area | What you get |
+|------|-------------|
+| **Composition control** | Layers, clips, columns, groups, decks — get snapshots, trigger playback, manage media, batch operations |
+| **Advanced Output** | Screen and slice management via both REST API and XML inspection. Backup, diff, rename, reroute, warp alignment |
+| **Playback & monitoring** | Transport control, parameter subscriptions, state polling, show-readiness audits |
+| **Effects** | Add, remove, move, rename effects across composition, layer, group, and clip scopes |
+| **Safety** | 16 destructive operations gated behind `confirm_destructive=True`. Atomic XML writes. Crash-resilient polling |
+
+## Quick start
+
+```bash
+# Clone and install
+git clone https://github.com/drohi-r/resolume-mcp && cd resolume-mcp
+pip install -e ".[dev]"
+
+# Run the server (connects to Resolume on localhost:8080)
+python -m resolume_mcp
+```
+
+Make sure Resolume Arena or Avenue is running with the REST API enabled (Preferences → OSC/HTTP → HTTP API).
+
+## Configuration
+
+The server reads configuration from environment variables. All have sensible defaults for local development.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RESOLUME_HOST` | `127.0.0.1` | Resolume instance IP |
+| `RESOLUME_HTTP_PORT` | `8080` | HTTP API port |
+| `RESOLUME_OSC_PORT` | `7000` | OSC listener port |
+| `RESOLUME_USE_HTTPS` | `false` | Use HTTPS for API calls (`true`, `yes`, `1`) |
+| `RESOLUME_DOCUMENTS_ROOT` | `~/Documents/Resolume Arena` | Resolume documents path |
+| `RESOLUME_ADVANCED_OUTPUT_XML` | `~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml` | Advanced Output XML path |
+| `RESOLUME_SLICES_XML` | `~/Documents/Resolume Arena/Preferences/slices.xml` | Slices XML path |
+
+## Claude Desktop
+
+Add this to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "resolume": {
+      "command": "python",
+      "args": ["-m", "resolume_mcp"],
+      "env": {
+        "RESOLUME_HOST": "127.0.0.1",
+        "RESOLUME_HTTP_PORT": "8080"
+      }
+    }
+  }
+}
+```
+
+## VS Code / Cursor
+
+Add to `.vscode/mcp.json` in your project:
+
+```json
+{
+  "servers": {
+    "resolume": {
+      "command": "python",
+      "args": ["-m", "resolume_mcp"],
+      "env": {
+        "RESOLUME_HOST": "127.0.0.1",
+        "RESOLUME_HTTP_PORT": "8080"
+      }
+    }
+  }
+}
+```
+
+## Skills
+
+The server includes 7 operator skills — structured workflows for common live-show scenarios:
+
+| Skill | When to use |
+|-------|-------------|
+| `playback-prep-and-busking` | Preparing Resolume for a live run or operator handoff |
+| `advanced-output-setup` | Setting up screens, slices, and routing for a show |
+| `output-routing-festival` | Fast rerouting for festival or guest rig changes |
+| `output-warp-alignment` | Aligning screen geometry and slice warping |
+| `festival-recovery-fast` | Recovering a show under time pressure |
+| `show-recovery-and-triage` | Diagnosing transport, output, or layer issues |
+| `deck-control-and-inspection` | Managing deck snapshots, audits, and parameters |
+
+## Safety model
+
+- **Read operations** (snapshots, audits, parameter gets): always safe, no confirmation needed
+- **Destructive operations** (clear, disconnect, remove): require `confirm_destructive=True`
+- **Advanced Output XML writes**: atomic (temp file + rename) to prevent corruption
+- **Polling loops**: crash-resilient — return last known state if Resolume becomes unreachable
+
+## Development
+
+```bash
+# Install with dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest -v
+```
+
+## License
+
+[Apache 2.0](LICENSE)
