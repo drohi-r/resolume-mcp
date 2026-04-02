@@ -164,7 +164,11 @@ class AdvancedOutputPreferences:
     def save(self, path: str | Path | None = None) -> dict[str, Any]:
         destination = Path(path).expanduser() if path is not None else self.path
         xml_text = ET.tostring(self.root, encoding="unicode")
-        destination.write_text('<?xml version="1.0" encoding="utf-8"?>\n' + xml_text, encoding="utf-8")
+        content = '<?xml version="1.0" encoding="utf-8"?>\n' + xml_text
+        tmp_path = destination.with_suffix(".xml.tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        import os
+        os.replace(str(tmp_path), str(destination))
         return {"path": str(destination)}
 
 

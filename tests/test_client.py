@@ -106,3 +106,27 @@ async def test_request_sends_json_for_array_body():
         params=None,
         json=["file:///Users/test/video.mp4"],
     )
+
+
+@pytest.mark.asyncio
+async def test_request_handles_invalid_json_body():
+    """When response has JSON content-type but body is not valid JSON, falls back to text."""
+    client = ResolumeClient(ResolumeConfig())
+    response = MagicMock()
+    response.headers = {"content-type": "application/json"}
+    response.json.side_effect = Exception("Invalid JSON")
+    response.text = "Internal Server Error"
+    response.is_success = False
+    response.status_code = 500
+
+    async_client = MagicMock()
+    async_client.request = AsyncMock(return_value=response)
+    async_client.__aenter__ = AsyncMock(return_value=async_client)
+    async_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("resolume_mcp.client.httpx.AsyncClient", return_value=async_client):
+        result = await client.request("GET", "/composition")
+
+    assert result["ok"] is False
+    assert result["status_code"] == 500
+    assert result["body"] == "Internal Server Error"

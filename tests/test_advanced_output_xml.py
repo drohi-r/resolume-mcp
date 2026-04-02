@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from resolume_mcp.advanced_output_xml import (
     AdvancedOutputPreferences,
     SliceInspectorPreferences,
@@ -283,3 +285,27 @@ def test_set_advanced_output_slice_vertices_rejects_wrong_count(tmp_path: Path):
         assert "Vertex count mismatch" in str(exc)
     else:
         raise AssertionError("Expected a vertex count mismatch error.")
+
+
+def test_save_is_atomic_no_tmp_left(tmp_path):
+    """save() should not leave behind a .xml.tmp file."""
+    xml_path = tmp_path / "test.xml"
+    xml_path.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    prefs = AdvancedOutputPreferences.load(xml_path)
+    prefs.save()
+    assert xml_path.exists()
+    assert not (tmp_path / "test.xml.tmp").exists()
+
+
+def test_load_missing_file_raises():
+    """Loading a nonexistent file should raise FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        AdvancedOutputPreferences.load("/nonexistent/path/to/file.xml")
+
+
+def test_load_malformed_xml_raises(tmp_path):
+    """Loading invalid XML should raise an exception."""
+    xml_path = tmp_path / "bad.xml"
+    xml_path.write_text("this is not xml <<<<", encoding="utf-8")
+    with pytest.raises(Exception):
+        AdvancedOutputPreferences.load(xml_path)

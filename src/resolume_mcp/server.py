@@ -337,7 +337,10 @@ async def _poll_clip_material_state(
         if _clip_material_state_cleared(latest):
             break
         await asyncio.sleep(delay_s)
-        latest = await _clip_material_state(client, layer_index, clip_index)
+        try:
+            latest = await _clip_material_state(client, layer_index, clip_index)
+        except Exception:
+            break
     return latest
 
 
@@ -353,7 +356,10 @@ async def _poll_selected_clip_material_state_by_id(
         if _clip_material_state_cleared(latest):
             break
         await asyncio.sleep(delay_s)
-        latest = _clip_material_state_from_payload(await client.request("GET", f"/composition/clips/by-id/{clip_id}"))
+        try:
+            latest = _clip_material_state_from_payload(await client.request("GET", f"/composition/clips/by-id/{clip_id}"))
+        except Exception:
+            break
     return latest
 
 
@@ -376,7 +382,10 @@ async def _poll_selected_layer_first_clip_material_state(
         if _clip_material_state_cleared(latest):
             break
         await asyncio.sleep(delay_s)
-        latest = await _selected_layer_first_clip_material_state(client)
+        try:
+            latest = await _selected_layer_first_clip_material_state(client)
+        except Exception:
+            break
     return latest
 
 
@@ -658,7 +667,9 @@ async def get_node(path: str, query_json: str = "") -> str:
 
 
 @mcp.tool()
-async def disconnect_all() -> str:
+async def disconnect_all(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "disconnect_all", "requires_confirmation": True, "message": "This will disconnect ALL clips in the entire composition. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", "/composition/disconnect-all")
     return _json_response(result)
 
@@ -1503,13 +1514,17 @@ async def move_layer_to_group(group_index: int, body_json: str) -> str:
 
 
 @mcp.tool()
-async def clear_group(group_index: int) -> str:
+async def clear_group(group_index: int, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_group", "requires_confirmation": True, "message": f"This will clear group {group_index}, removing all its content. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", f"/composition/layergroups/{group_index}/clear")
     return _json_response(result)
 
 
 @mcp.tool()
-async def clear_selected_group() -> str:
+async def clear_selected_group(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_selected_group", "requires_confirmation": True, "message": "This will clear the selected group, removing all its content. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", "/composition/layergroups/selected/clear")
     return _json_response(result)
 
@@ -1766,7 +1781,9 @@ async def trigger_clips(layer_index: int, clip_indices_json: str) -> str:
 
 
 @mcp.tool()
-async def disconnect_clips(layer_index: int, clip_indices_json: str) -> str:
+async def disconnect_clips(layer_index: int, clip_indices_json: str, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "disconnect_clips", "requires_confirmation": True, "message": f"This will disconnect the specified clips on layer {layer_index}. Re-call with confirm_destructive=True to proceed."})
     clip_indices = _parse_json_list(clip_indices_json, field_name="clip_indices_json")
     results: list[dict[str, Any]] = []
     client = _client()
@@ -1790,7 +1807,9 @@ async def disconnect_clips(layer_index: int, clip_indices_json: str) -> str:
 
 
 @mcp.tool()
-async def clear_layers(layer_indices_json: str) -> str:
+async def clear_layers(layer_indices_json: str, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_layers", "requires_confirmation": True, "message": "This will clear the specified layers, removing all their content. Re-call with confirm_destructive=True to proceed."})
     layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
     results: list[dict[str, Any]] = []
     client = _client()
@@ -2450,7 +2469,9 @@ async def trigger_selected_clip() -> str:
 
 
 @mcp.tool()
-async def disconnect_clip(layer_index: int, clip_index: int) -> str:
+async def disconnect_clip(layer_index: int, clip_index: int, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "disconnect_clip", "requires_confirmation": True, "message": f"This will disconnect clip {clip_index} on layer {layer_index}. Re-call with confirm_destructive=True to proceed."})
     client = _client()
     before_state = await _clip_connection_state(client, layer_index, clip_index)
     response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
@@ -2470,7 +2491,9 @@ async def disconnect_clip(layer_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
-async def disconnect_selected_clip() -> str:
+async def disconnect_selected_clip(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "disconnect_selected_clip", "requires_confirmation": True, "message": "This will disconnect the currently selected clip. Re-call with confirm_destructive=True to proceed."})
     client = _client()
     before_payload = await client.request("GET", "/composition/clips/selected")
     before_state = _extract_body(before_payload).get("connected", {}).get("value") if isinstance(_extract_body(before_payload), dict) else None
@@ -2490,7 +2513,9 @@ async def disconnect_selected_clip() -> str:
 
 
 @mcp.tool()
-async def clear_clip(layer_index: int, clip_index: int) -> str:
+async def clear_clip(layer_index: int, clip_index: int, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_clip", "requires_confirmation": True, "message": f"This will clear clip {clip_index} on layer {layer_index}, removing its media. Re-call with confirm_destructive=True to proceed."})
     client = _client()
     before = await _clip_material_state(client, layer_index, clip_index)
     response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/clear")
@@ -2520,7 +2545,9 @@ async def clear_clip(layer_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
-async def clear_selected_clip() -> str:
+async def clear_selected_clip(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_selected_clip", "requires_confirmation": True, "message": "This will clear the currently selected clip, removing its media. Re-call with confirm_destructive=True to proceed."})
     client = _client()
     selected_payload = await client.request("GET", "/composition/clips/selected")
     selected_body = _extract_body(selected_payload)
@@ -2566,7 +2593,9 @@ async def trigger_column(column_index: int) -> str:
 
 
 @mcp.tool()
-async def disconnect_column(column_index: int) -> str:
+async def disconnect_column(column_index: int, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "disconnect_column", "requires_confirmation": True, "message": f"This will disconnect column {column_index}. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", f"/composition/columns/{column_index}/connect", body=False)
     return _json_response(result)
 
@@ -2600,39 +2629,57 @@ async def select_clip(layer_index: int, clip_index: int) -> str:
 
 
 @mcp.tool()
-async def clear_layer(layer_index: int) -> str:
+async def clear_layer(layer_index: int, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_layer", "requires_confirmation": True, "message": f"This will clear layer {layer_index}, removing all its content. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clear")
     return _json_response(result)
 
 
 @mcp.tool()
-async def clear_selected_layer() -> str:
+async def clear_selected_layer(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_selected_layer", "requires_confirmation": True, "message": "This will clear the selected layer, removing all its content. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", "/composition/layers/selected/clear")
     return _json_response(result)
 
 
 @mcp.tool()
-async def clear_layer_clips(layer_index: int) -> str:
+async def clear_layer_clips(layer_index: int, confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_layer_clips", "requires_confirmation": True, "message": f"This will clear all clips on layer {layer_index}. Re-call with confirm_destructive=True to proceed."})
     client = _client()
-    before = await _clip_material_state(client, layer_index, 1)
+    # Determine if the layer has clips before verifying state
+    layer_payload = await client.request("GET", f"/composition/layers/{layer_index}")
+    layer_body = _extract_body(layer_payload)
+    has_clips = isinstance(layer_body, dict) and isinstance(layer_body.get("clips"), list) and len(layer_body["clips"]) > 0
+    empty_state = {"connected": None, "name": None, "has_video": None, "has_audio": None}
+    if has_clips:
+        before = await _clip_material_state(client, layer_index, 1)
+    else:
+        before = empty_state
     response = await client.request("POST", f"/composition/layers/{layer_index}/clearclips")
-    after = await _poll_clip_material_state(client, layer_index=layer_index, clip_index=1)
-    cleared = _clip_material_state_cleared(after)
+    if has_clips:
+        after = await _poll_clip_material_state(client, layer_index=layer_index, clip_index=1)
+        cleared = _clip_material_state_cleared(after)
+    else:
+        after = empty_state
+        cleared = True
     return _json_response(
         {
             "layer_index": layer_index,
             "response": response,
             "before_state": {
-                "connected": before["connected"],
-                "name": before["name"],
-                "has_video": before["has_video"],
-                "has_audio": before["has_audio"],
+                "connected": before.get("connected"),
+                "name": before.get("name"),
+                "has_video": before.get("has_video"),
+                "has_audio": before.get("has_audio"),
             },
             "after_state": {
-                "connected": after["connected"],
-                "name": after["name"],
-                "has_video": after["has_video"],
-                "has_audio": after["has_audio"],
+                "connected": after.get("connected"),
+                "name": after.get("name"),
+                "has_video": after.get("has_video"),
+                "has_audio": after.get("has_audio"),
             },
             "cleared": cleared,
             "note": None if cleared else "Layer retained clip media state after clearclips request on this Resolume build.",
@@ -2641,7 +2688,9 @@ async def clear_layer_clips(layer_index: int) -> str:
 
 
 @mcp.tool()
-async def clear_selected_layer_clips() -> str:
+async def clear_selected_layer_clips(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_selected_layer_clips", "requires_confirmation": True, "message": "This will clear all clips on the selected layer. Re-call with confirm_destructive=True to proceed."})
     client = _client()
     before = await _selected_layer_first_clip_material_state(client)
     response = await client.request("POST", "/composition/layers/selected/clearclips")
@@ -2669,7 +2718,9 @@ async def clear_selected_layer_clips() -> str:
 
 
 @mcp.tool()
-async def clear_composition() -> str:
+async def clear_composition(confirm_destructive: bool = False) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "clear_composition", "requires_confirmation": True, "message": "This will clear the ENTIRE composition, removing all media from all layers. Re-call with confirm_destructive=True to proceed."})
     result = await _client().request("POST", "/composition/clear")
     return _json_response(result)
 
@@ -3023,7 +3074,10 @@ async def remove_effect(
     layer_index: int | None = None,
     group_index: int | None = None,
     clip_index: int | None = None,
+    confirm_destructive: bool = False,
 ) -> str:
+    if not confirm_destructive:
+        return _json_response({"action": "remove_effect", "requires_confirmation": True, "message": f"This will remove effect at index {effect_index} from {scope}. Re-call with confirm_destructive=True to proceed."})
     base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
     kind = _effect_kind_path(effect_kind)
     path = f"{base}/effects/{kind}/{effect_index}"

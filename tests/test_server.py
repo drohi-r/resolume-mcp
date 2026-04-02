@@ -103,7 +103,7 @@ async def test_clear_layers_requires_array():
     from resolume_mcp.server import clear_layers
 
     with pytest.raises(ValueError, match="layer_indices_json must decode to a JSON array."):
-        await clear_layers("{\"bad\":true}")
+        await clear_layers("{\"bad\":true}", confirm_destructive=True)
 
 
 @pytest.mark.asyncio
@@ -365,7 +365,7 @@ async def test_disconnect_clip(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await disconnect_clip(1, 2))
+    payload = json.loads(await disconnect_clip(1, 2, confirm_destructive=True))
     assert payload["response"]["ok"] is True
     assert payload["disconnected"] is False
     fake.request.assert_any_await("POST", "/composition/layers/1/clips/2/connect", body=False)
@@ -482,7 +482,7 @@ async def test_disconnect_clips(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await disconnect_clips(1, "[2,3]"))
+    payload = json.loads(await disconnect_clips(1, "[2,3]", confirm_destructive=True))
     assert len(payload["results"]) == 2
     assert payload["results"][0]["disconnected"] is False
     assert payload["results"][1]["disconnected"] is True
@@ -501,7 +501,7 @@ async def test_clear_layers(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await clear_layers("[1,4]"))
+    payload = json.loads(await clear_layers("[1,4]", confirm_destructive=True))
     assert len(payload["results"]) == 2
     assert payload["results"][0]["layer_index"] == 1
 
@@ -520,7 +520,7 @@ async def test_clear_clip_reports_verified_state(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await clear_clip(1, 2))
+    payload = json.loads(await clear_clip(1, 2, confirm_destructive=True))
     assert payload["response"]["ok"] is True
     assert payload["cleared"] is True
 
@@ -539,7 +539,7 @@ async def test_clear_selected_clip_reports_verified_state(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await clear_selected_clip())
+    payload = json.loads(await clear_selected_clip(confirm_destructive=True))
     assert payload["response"]["ok"] is True
     assert payload["clip_id"] == 1001
     assert payload["cleared"] is True
@@ -1937,7 +1937,7 @@ async def test_remove_effect_from_composition(mock_client_factory):
     fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/effects/video/1"})
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await remove_effect("composition", "video", 1))
+    payload = json.loads(await remove_effect("composition", "video", 1, confirm_destructive=True))
     assert payload["path"] == "/api/v1/composition/effects/video/1"
     fake.request.assert_awaited_once_with("DELETE", "/composition/effects/video/1")
 
@@ -1951,7 +1951,7 @@ async def test_remove_effect_from_clip_uses_clip_id(mock_client_factory):
     fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/1/clips/2/effects/video/1"})
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await remove_effect("clip", "video", 1, layer_index=1, clip_index=2))
+    payload = json.loads(await remove_effect("clip", "video", 1, layer_index=1, clip_index=2, confirm_destructive=True))
     assert payload["path"] == "/api/v1/composition/layers/1/clips/2/effects/video/1"
     fake.request.assert_awaited_once_with("DELETE", "/composition/layers/1/clips/2/effects/video/1")
 
@@ -2027,7 +2027,7 @@ async def test_clear_selected_group(mock_client_factory):
     fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layergroups/selected/clear"})
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await clear_selected_group())
+    payload = json.loads(await clear_selected_group(confirm_destructive=True))
     assert payload["path"] == "/api/v1/composition/layergroups/selected/clear"
     fake.request.assert_awaited_once_with("POST", "/composition/layergroups/selected/clear")
 
@@ -2052,6 +2052,7 @@ async def test_clear_layer_clips(mock_client_factory):
 
     fake = MagicMock()
     fake.request = AsyncMock(side_effect=[
+        {"body": {"clips": [{"id": 1}]}},
         {"body": {"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
         {"ok": True, "path": "/api/v1/composition/layers/6/clearclips"},
         {"body": {"name": {"value": ""}, "connected": {"value": "Empty"}, "video": {}, "audio": {}}},
@@ -2059,7 +2060,7 @@ async def test_clear_layer_clips(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await clear_layer_clips(6))
+    payload = json.loads(await clear_layer_clips(6, confirm_destructive=True))
     assert payload["response"]["path"] == "/api/v1/composition/layers/6/clearclips"
     assert payload["cleared"] is True
 
@@ -2078,7 +2079,7 @@ async def test_clear_selected_layer_clips(mock_client_factory):
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await clear_selected_layer_clips())
+    payload = json.loads(await clear_selected_layer_clips(confirm_destructive=True))
     assert payload["response"]["path"] == "/api/v1/composition/layers/selected/clearclips"
     assert payload["cleared"] is True
 
@@ -2134,7 +2135,7 @@ async def test_disconnect_all(mock_client_factory):
     fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/disconnect-all"})
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await disconnect_all())
+    payload = json.loads(await disconnect_all(confirm_destructive=True))
     assert payload["path"] == "/api/v1/composition/disconnect-all"
 
 
@@ -2206,7 +2207,7 @@ async def test_disconnect_selected_clip_reports_verified_state(mock_client_facto
     ])
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await disconnect_selected_clip())
+    payload = json.loads(await disconnect_selected_clip(confirm_destructive=True))
     assert payload["before_state"] == "Connected"
     assert payload["after_state"] == "Connected"
     assert payload["disconnected"] is False
@@ -2226,3 +2227,41 @@ async def test_add_effect_requires_spec():
 
     with pytest.raises(ValueError, match="effect_spec is required"):
         await add_effect("composition", "video", "   ")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_all_requires_confirmation():
+    """Destructive tools must require confirm_destructive=True."""
+    from resolume_mcp.server import disconnect_all
+    result = await disconnect_all()
+    parsed = json.loads(result)
+    assert parsed["requires_confirmation"] is True
+    assert "disconnect" in parsed["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_clear_composition_requires_confirmation():
+    """clear_composition must require confirmation before proceeding."""
+    from resolume_mcp.server import clear_composition
+    result = await clear_composition()
+    parsed = json.loads(result)
+    assert parsed["requires_confirmation"] is True
+    assert "composition" in parsed["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_clear_clip_requires_confirmation():
+    """clear_clip must require confirmation before proceeding."""
+    from resolume_mcp.server import clear_clip
+    result = await clear_clip(layer_index=1, clip_index=1)
+    parsed = json.loads(result)
+    assert parsed["requires_confirmation"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_effect_requires_confirmation():
+    """remove_effect must require confirmation before proceeding."""
+    from resolume_mcp.server import remove_effect
+    result = await remove_effect(scope="composition", effect_kind="video", effect_index=1)
+    parsed = json.loads(result)
+    assert parsed["requires_confirmation"] is True

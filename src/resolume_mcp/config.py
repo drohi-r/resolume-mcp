@@ -4,6 +4,22 @@ import os
 from dataclasses import dataclass
 
 
+def _parse_port(env_name: str, default: str) -> int:
+    raw = os.getenv(env_name, default)
+    try:
+        port = int(raw)
+    except ValueError:
+        raise ValueError(f"{env_name}={raw!r} is not a valid integer") from None
+    if not (1 <= port <= 65535):
+        raise ValueError(f"{env_name}={port} is outside valid port range 1-65535")
+    return port
+
+
+def _parse_bool(env_name: str, default: str) -> bool:
+    raw = os.getenv(env_name, default).strip().lower()
+    return raw in ("1", "true", "yes")
+
+
 @dataclass(frozen=True)
 class ResolumeConfig:
     host: str = "127.0.0.1"
@@ -28,9 +44,9 @@ class ResolumeConfig:
 def load_config() -> ResolumeConfig:
     return ResolumeConfig(
         host=os.getenv("RESOLUME_HOST", "127.0.0.1"),
-        http_port=int(os.getenv("RESOLUME_HTTP_PORT", "8080")),
-        osc_port=int(os.getenv("RESOLUME_OSC_PORT", "7000")),
-        use_https=os.getenv("RESOLUME_USE_HTTPS", "0") == "1",
+        http_port=_parse_port("RESOLUME_HTTP_PORT", "8080"),
+        osc_port=_parse_port("RESOLUME_OSC_PORT", "7000"),
+        use_https=_parse_bool("RESOLUME_USE_HTTPS", "0"),
         documents_root=os.getenv("RESOLUME_DOCUMENTS_ROOT", os.path.expanduser("~/Documents/Resolume Arena")),
         advanced_output_xml_path=os.getenv(
             "RESOLUME_ADVANCED_OUTPUT_XML",

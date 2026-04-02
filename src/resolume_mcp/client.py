@@ -69,7 +69,10 @@ class ResolumeClient:
         parsed: Any
         content_type = response.headers.get("content-type", "")
         if "application/json" in content_type:
-            parsed = response.json()
+            try:
+                parsed = response.json()
+            except Exception:
+                parsed = response.text
         else:
             parsed = response.text
 

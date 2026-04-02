@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "Private MCP server for Resolume Arena and Avenue control"
 requires-python = ">=3.12"
 dependencies = [
-  "mcp",
-  "httpx",
-  "websockets",
+  "mcp>=1.0",
+  "httpx>=0.28",
+  "websockets>=16.0",
 ]
 
 [build-system]
