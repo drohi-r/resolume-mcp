@@ -68,11 +68,14 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
     - summary
     - screen inspection
     - slice inspection
+    - Windows path candidates
+    - local path probe
     - backup
     - diff
     - export bundle
     - preview restore
     - backup-first restore
+    - guarded XML edits for screen name, slice name, and soft-edge power
 
 ## Local skills currently present
 

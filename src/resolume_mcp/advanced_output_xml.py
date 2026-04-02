@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +43,13 @@ def _param_value(element: ET.Element, name: str) -> str | float | int | None:
             except ValueError:
                 continue
         return value
+    return None
+
+
+def _find_param(element: ET.Element, name: str) -> ET.Element | None:
+    for param in element.findall("./Params/*"):
+        if param.get("name") == name:
+            return param
     return None
 
 
@@ -124,6 +132,12 @@ class AdvancedOutputPreferences:
             "screens": [_screen_summary(screen_element, index=index) for index, screen_element in enumerate(screen_elements)],
         }
 
+    def save(self, path: str | Path | None = None) -> dict[str, Any]:
+        destination = Path(path).expanduser() if path is not None else self.path
+        xml_text = ET.tostring(self.root, encoding="unicode")
+        destination.write_text('<?xml version="1.0" encoding="utf-8"?>\n' + xml_text, encoding="utf-8")
+        return {"path": str(destination)}
+
 
 @dataclass(frozen=True)
 class SliceInspectorPreferences:
@@ -195,6 +209,24 @@ def export_advanced_output_bundle(
             target_dir,
             export_name="slices.xml",
         ),
+    }
+
+
+def windows_advanced_output_path_candidates(
+    *,
+    username: str = "",
+    drive: str = "C:",
+) -> dict[str, Any]:
+    resolved_username = username.strip() or os.getenv("USERNAME", "").strip() or "<USERNAME>"
+    base = f"{drive}\\Users\\{resolved_username}\\Documents\\Resolume Arena"
+    return {
+        "documents_root": base,
+        "advanced_output_xml_path": f"{base}\\Preferences\\AdvancedOutput.xml",
+        "slices_xml_path": f"{base}\\Preferences\\slices.xml",
+        "notes": [
+            "These are Windows candidate paths only.",
+            "They should be validated on the actual media server and then set through RESOLUME_DOCUMENTS_ROOT, RESOLUME_ADVANCED_OUTPUT_XML, and RESOLUME_SLICES_XML.",
+        ],
     }
 
 
@@ -291,5 +323,103 @@ def restore_advanced_output_bundle(
         "notes": [
             "Current files were backed up before restore.",
             "Resolume reload behavior after XML replacement is not yet verified on this machine. Manual reopen, preset import, or app restart may be required.",
+        ],
+    }
+
+
+def rename_screen_in_advanced_output(
+    *,
+    advanced_output_xml_path: str | Path,
+    screen_index: int,
+    new_name: str,
+    backup_dir: str | Path,
+) -> dict[str, Any]:
+    prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
+    screens_parent = prefs.root.find("./screens")
+    screen_elements = screens_parent.findall("./Screen") if screens_parent is not None else []
+    if screen_index < 0 or screen_index >= len(screen_elements):
+        raise IndexError("screen_index is out of range for AdvancedOutput.xml.")
+    screen = screen_elements[screen_index]
+    param = _find_param(screen, "Name")
+    if param is None:
+        raise ValueError("Could not find the screen Name parameter in AdvancedOutput.xml.")
+    backup = backup_xml_file(advanced_output_xml_path, backup_dir)
+    old_name = param.get("value")
+    param.set("value", new_name)
+    prefs.save()
+    return {
+        "backup": backup,
+        "path": str(prefs.path),
+        "screen_index": screen_index,
+        "old_name": old_name,
+        "new_name": new_name,
+        "notes": [
+            "Only the screen Name parameter was changed.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine.",
+        ],
+    }
+
+
+def rename_slice_in_advanced_output(
+    *,
+    advanced_output_xml_path: str | Path,
+    screen_index: int,
+    slice_index: int,
+    new_name: str,
+    backup_dir: str | Path,
+) -> dict[str, Any]:
+    prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
+    screens_parent = prefs.root.find("./screens")
+    screen_elements = screens_parent.findall("./Screen") if screens_parent is not None else []
+    if screen_index < 0 or screen_index >= len(screen_elements):
+        raise IndexError("screen_index is out of range for AdvancedOutput.xml.")
+    slices_parent = screen_elements[screen_index].find("./layers")
+    slice_elements = slices_parent.findall("./Slice") if slices_parent is not None else []
+    if slice_index < 0 or slice_index >= len(slice_elements):
+        raise IndexError("slice_index is out of range for the selected screen in AdvancedOutput.xml.")
+    slice_element = slice_elements[slice_index]
+    param = _find_param(slice_element, "Name")
+    if param is None:
+        raise ValueError("Could not find the slice Name parameter in AdvancedOutput.xml.")
+    backup = backup_xml_file(advanced_output_xml_path, backup_dir)
+    old_name = param.get("value")
+    param.set("value", new_name)
+    prefs.save()
+    return {
+        "backup": backup,
+        "path": str(prefs.path),
+        "screen_index": screen_index,
+        "slice_index": slice_index,
+        "old_name": old_name,
+        "new_name": new_name,
+        "notes": [
+            "Only the slice Name parameter was changed.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine.",
+        ],
+    }
+
+
+def set_advanced_output_soft_edge_power(
+    *,
+    advanced_output_xml_path: str | Path,
+    value: float,
+    backup_dir: str | Path,
+) -> dict[str, Any]:
+    prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
+    param = prefs.root.find("./SoftEdging/Params/ParamRange[@name='Power']")
+    if param is None:
+        raise ValueError("Could not find SoftEdging/Power in AdvancedOutput.xml.")
+    backup = backup_xml_file(advanced_output_xml_path, backup_dir)
+    old_value = param.get("value")
+    param.set("value", repr(value))
+    prefs.save()
+    return {
+        "backup": backup,
+        "path": str(prefs.path),
+        "old_value": old_value,
+        "new_value": value,
+        "notes": [
+            "Only the Soft Edge Power parameter was changed.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine.",
         ],
     }

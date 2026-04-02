@@ -7,7 +7,11 @@ from resolume_mcp.advanced_output_xml import (
     diff_xml_text,
     export_advanced_output_bundle,
     preview_restore_advanced_output_bundle,
+    rename_screen_in_advanced_output,
+    rename_slice_in_advanced_output,
     restore_advanced_output_bundle,
+    set_advanced_output_soft_edge_power,
+    windows_advanced_output_path_candidates,
 )
 
 
@@ -171,3 +175,51 @@ def test_restore_advanced_output_bundle(tmp_path: Path):
     )
     assert Path(payload["backups"]["advanced_output_xml"]["backup"]).exists()
     assert "Slice Restored" in current_advanced_output.read_text(encoding="utf-8")
+
+
+def test_windows_advanced_output_path_candidates():
+    payload = windows_advanced_output_path_candidates(username="VJ", drive="D:")
+    assert payload["documents_root"] == "D:\\Users\\VJ\\Documents\\Resolume Arena"
+    assert payload["advanced_output_xml_path"].endswith("AdvancedOutput.xml")
+
+
+def test_rename_screen_in_advanced_output(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+
+    payload = rename_screen_in_advanced_output(
+        advanced_output_xml_path=advanced_output,
+        screen_index=0,
+        new_name="Main Wall",
+        backup_dir=tmp_path / "backups",
+    )
+    assert Path(payload["backup"]["backup"]).exists()
+    assert "Main Wall" in advanced_output.read_text(encoding="utf-8")
+
+
+def test_rename_slice_in_advanced_output(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+
+    payload = rename_slice_in_advanced_output(
+        advanced_output_xml_path=advanced_output,
+        screen_index=0,
+        slice_index=0,
+        new_name="Slice Main",
+        backup_dir=tmp_path / "backups",
+    )
+    assert Path(payload["backup"]["backup"]).exists()
+    assert "Slice Main" in advanced_output.read_text(encoding="utf-8")
+
+
+def test_set_advanced_output_soft_edge_power(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+
+    payload = set_advanced_output_soft_edge_power(
+        advanced_output_xml_path=advanced_output,
+        value=3.5,
+        backup_dir=tmp_path / "backups",
+    )
+    assert Path(payload["backup"]["backup"]).exists()
+    assert 'value="3.5"' in advanced_output.read_text(encoding="utf-8")

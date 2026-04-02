@@ -34,6 +34,8 @@ Important:
 
 - The current repo defaults for XML-backed Advanced Output paths are based on the macOS validation machine.
 - For Windows media servers, set the XML path environment variables explicitly so the repo points at the correct Resolume documents/preferences locations on that host.
+- Use `get_windows_advanced_output_path_candidates` for likely Windows path shapes.
+- Use `probe_advanced_output_paths` on the actual server host to verify the configured paths resolve locally.
 
 ## Local setup
 
@@ -93,6 +95,8 @@ Output:
 3. Then use `get_advanced_output_slice_xml`
 4. Use `backup_advanced_output_preferences` before any manual output changes
 5. Use `diff_advanced_output_preferences` to compare setups safely
+6. Use `export_advanced_output_preferences` to capture a portable bundle
+7. Use `preview_restore_advanced_output_preferences` before any restore
 
 Decks:
 
@@ -118,6 +122,11 @@ Notes:
 - On that same build, Advanced Output HTTP endpoints returned `404`, so output helpers should be treated as experimental until your target machine exposes them.
 - On that same build, Advanced Output is persisted to XML under `~/Documents/Resolume Arena/Preferences`, and the repo now has read-only XML tools for that surface.
 - The above XML path finding was validated on macOS only. Windows deployment paths should be treated as host-specific configuration, not assumed to match the macOS defaults.
+- The XML write helpers currently added are intentionally narrow:
+  - rename screen
+  - rename slice
+  - set soft-edge power
+- They are backup-first file edits, not proof of live reload behavior inside Resolume.
 - Deck helpers are live-verified for selection and scroll state; they do not currently assume hidden deck transport controls.
 
 ## Design note

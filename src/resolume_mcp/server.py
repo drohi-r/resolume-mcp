@@ -13,7 +13,11 @@ from .advanced_output_xml import (
     diff_xml_text,
     export_advanced_output_bundle,
     preview_restore_advanced_output_bundle,
+    rename_screen_in_advanced_output,
+    rename_slice_in_advanced_output,
     restore_advanced_output_bundle,
+    set_advanced_output_soft_edge_power,
+    windows_advanced_output_path_candidates,
 )
 from .client import ResolumeClient
 from .config import load_config
@@ -457,6 +461,42 @@ def export_advanced_output_preferences(export_dir: str = "", bundle_name: str = 
 
 
 @mcp.tool()
+def get_windows_advanced_output_path_candidates(username: str = "", drive: str = "C:") -> str:
+    return _json_response(windows_advanced_output_path_candidates(username=username, drive=drive))
+
+
+@mcp.tool()
+def probe_advanced_output_paths(
+    documents_root: str = "",
+    advanced_output_xml_path: str = "",
+    slices_xml_path: str = "",
+) -> str:
+    config = load_config()
+    documents = Path(documents_root.strip() or config.documents_root).expanduser()
+    advanced_output = Path(advanced_output_xml_path.strip() or config.advanced_output_xml_path).expanduser()
+    slices = Path(slices_xml_path.strip() or config.slices_xml_path).expanduser()
+    return _json_response(
+        {
+            "documents_root": {"path": str(documents), "exists": documents.exists(), "is_dir": documents.is_dir()},
+            "advanced_output_xml_path": {
+                "path": str(advanced_output),
+                "exists": advanced_output.exists(),
+                "is_file": advanced_output.is_file(),
+            },
+            "slices_xml_path": {
+                "path": str(slices),
+                "exists": slices.exists(),
+                "is_file": slices.is_file(),
+            },
+            "notes": [
+                "This only probes the local filesystem of the machine running the MCP server.",
+                "Use explicit env vars on Windows media servers so these paths resolve correctly on that host.",
+            ],
+        }
+    )
+
+
+@mcp.tool()
 def preview_restore_advanced_output_preferences(
     source_advanced_output_xml_path: str,
     source_slices_xml_path: str = "",
@@ -468,6 +508,45 @@ def preview_restore_advanced_output_preferences(
         current_slices_xml_path=config.slices_xml_path,
         candidate_advanced_output_xml_path=source_advanced_output_xml_path,
         candidate_slices_xml_path=candidate_slices_path,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def rename_advanced_output_screen(screen_index: int, new_name: str, backup_dir: str = "") -> str:
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = rename_screen_in_advanced_output(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        screen_index=screen_index,
+        new_name=new_name,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def rename_advanced_output_slice(screen_index: int, slice_index: int, new_name: str, backup_dir: str = "") -> str:
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = rename_slice_in_advanced_output(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        screen_index=screen_index,
+        slice_index=slice_index,
+        new_name=new_name,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def set_advanced_output_soft_edge_power_xml(value: float, backup_dir: str = "") -> str:
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = set_advanced_output_soft_edge_power(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        value=value,
+        backup_dir=target_backup_dir,
     )
     return _json_response(payload)
 

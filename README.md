@@ -25,11 +25,14 @@ Status:
   - summary
   - screen inspection
   - slice inspection
+  - Windows path candidates
+  - local path probe
   - backup
   - diff
   - export bundle
   - preview restore
   - backup-first restore
+  - guarded XML edits for screen name, slice name, and soft-edge power
 - deck access and deck-parameter helpers in place
 - deck snapshot and audit helpers are live-verified against the current deck schema
 - deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields

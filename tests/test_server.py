@@ -1484,3 +1484,98 @@ def test_restore_advanced_output_preferences(tmp_path: Path):
         payload = json.loads(restore_advanced_output_preferences(str(source_advanced_output), backup_dir=str(tmp_path / "backups")))
     assert Path(payload["backups"]["advanced_output_xml"]["backup"]).exists()
     assert "Slice Restored" in current_advanced_output.read_text(encoding="utf-8")
+
+
+def test_get_windows_advanced_output_path_candidates():
+    from resolume_mcp.server import get_windows_advanced_output_path_candidates
+
+    payload = json.loads(get_windows_advanced_output_path_candidates("MediaUser", "D:"))
+    assert payload["documents_root"] == "D:\\Users\\MediaUser\\Documents\\Resolume Arena"
+
+
+def test_probe_advanced_output_paths(tmp_path: Path):
+    from resolume_mcp.server import probe_advanced_output_paths
+
+    documents = tmp_path / "Resolume Arena"
+    preferences = documents / "Preferences"
+    preferences.mkdir(parents=True)
+    advanced_output = preferences / "AdvancedOutput.xml"
+    slices_xml = preferences / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    payload = json.loads(
+        probe_advanced_output_paths(
+            str(documents),
+            str(advanced_output),
+            str(slices_xml),
+        )
+    )
+    assert payload["documents_root"]["exists"] is True
+    assert payload["advanced_output_xml_path"]["is_file"] is True
+
+
+def test_rename_advanced_output_screen(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import rename_advanced_output_screen
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+    ):
+        payload = json.loads(rename_advanced_output_screen(0, "Main Wall"))
+    assert "Main Wall" in advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
+
+
+def test_rename_advanced_output_slice(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import rename_advanced_output_slice
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+    ):
+        payload = json.loads(rename_advanced_output_slice(0, 0, "Hero Slice"))
+    assert "Hero Slice" in advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
+
+
+def test_set_advanced_output_soft_edge_power_xml(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import set_advanced_output_soft_edge_power_xml
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+    ):
+        payload = json.loads(set_advanced_output_soft_edge_power_xml(4.25))
+    assert 'value="4.25"' in advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
