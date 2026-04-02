@@ -93,3 +93,9 @@ Scope note:
   - `set_clip_transport_position` resolved through `transport/position` and wrote successfully, but position naturally advances during playback so exact post-write equality should not be expected while the clip is running
   - `disconnect_clip` did not actually disconnect the clip even though the `POST /connect` request returned `204`
   - clip video effect inspection is reliable through the embedded clip payload when the clip exposes a populated `video.effects` list
+- On an empty target slot (`layer 1 / clip 2`) on this machine:
+  - `insert_clip` works when the body is an array of `file://` URIs
+  - bare filesystem paths and non-array insert payloads failed with `400`
+  - `open` / `openfile` attempts still returned `400` for the tested payload shapes
+  - `clear_clip` did not actually clear the inserted media even though the request returned `204`
+  - `effects/video/add` returned `400` on the temporary inserted slot

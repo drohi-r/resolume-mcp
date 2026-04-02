@@ -508,6 +508,24 @@ async def test_clear_layers(mock_client_factory):
 
 @pytest.mark.asyncio
 @patch("resolume_mcp.server._client")
+async def test_clear_clip_reports_verified_state(mock_client_factory):
+    from resolume_mcp.server import clear_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
+        {"ok": True, "path": "/api/v1/composition/layers/1/clips/2/clear"},
+        {"body": {"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await clear_clip(1, 2))
+    assert payload["response"]["ok"] is True
+    assert payload["cleared"] is False
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
 async def test_prepare_layer(mock_client_factory):
     from resolume_mcp.server import prepare_layer
 
@@ -1750,7 +1768,7 @@ async def test_open_clip_file(mock_client_factory):
     fake.request.assert_awaited_once_with(
         "POST",
         "/composition/layers/2/clips/5/openfile",
-        body={"path": "C:/media/loop.mov"},
+        body="file:///C:/media/loop.mov",
     )
 
 
@@ -1765,6 +1783,24 @@ async def test_open_selected_clip_file(mock_client_factory):
 
     payload = json.loads(await open_selected_clip_file('{"path":"D:/content/test.png"}'))
     assert payload["path"] == "/api/v1/composition/clips/selected/openfile"
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_insert_clip_normalizes_to_array(mock_client_factory):
+    from resolume_mcp.server import insert_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/1/clips/2/insert"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await insert_clip(1, 2, '"file:///Users/test/video.mp4"'))
+    assert payload["path"] == "/api/v1/composition/layers/1/clips/2/insert"
+    fake.request.assert_awaited_once_with(
+        "POST",
+        "/composition/layers/1/clips/2/insert",
+        body=["file:///Users/test/video.mp4"],
+    )
 
 
 @pytest.mark.asyncio

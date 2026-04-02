@@ -20,6 +20,10 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - `trigger_clip` is live-proven on a loaded media clip
   - `set_clip_speed` and `set_clip_transport_position` are live-proven on a loaded media clip, with the normal caveat that position keeps advancing while playback runs
   - `disconnect_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip remains connected
+  - `insert_clip` is live-proven when given an array of `file://` URIs
+  - `open` / `openfile` media-loading helpers are still unresolved on this build for the payload shapes tested so far
+  - `clear_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip retains its media
+  - `effects/video/add` on a temporary inserted slot returned `400` during live validation
   - Advanced Output HTTP paths currently return `404`
   - Advanced Output is persisted locally as XML in `~/Documents/Resolume Arena/Preferences`
   - those XML path findings are macOS-specific and should be reconfigured or revalidated on Windows hosts

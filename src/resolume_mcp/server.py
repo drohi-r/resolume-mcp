@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
 
 from mcp.server.fastmcp import FastMCP
 
@@ -79,6 +80,39 @@ def _optional_json_object(value: str, *, field_name: str) -> Any:
     if not isinstance(parsed, dict):
         raise ValueError(f"{field_name} must decode to a JSON object.")
     return parsed
+
+
+def _normalize_media_uri(value: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        raise ValueError("media path/value is required.")
+    if len(candidate) >= 3 and candidate[1] == ":" and candidate[0].isalpha() and candidate[2] in {"\\", "/"}:
+        drive = candidate[0].upper()
+        remainder = candidate[2:].replace("\\", "/")
+        return f"file:///{drive}:{quote(remainder)}"
+    parsed = urlparse(candidate)
+    if parsed.scheme:
+        return candidate
+    return Path(candidate).expanduser().resolve().as_uri()
+
+
+def _normalize_media_scalar_or_field(value: Any) -> str:
+    if isinstance(value, str):
+        return _normalize_media_uri(value)
+    if isinstance(value, dict):
+        for key in ("path", "file", "filename", "location", "url"):
+            field = value.get(key)
+            if isinstance(field, str) and field.strip():
+                return _normalize_media_uri(field)
+    raise ValueError("Expected a media path string or an object containing one of: path, file, filename, location, url.")
+
+
+def _normalize_media_insert_body(value: Any) -> list[str]:
+    if isinstance(value, list):
+        if not value:
+            raise ValueError("Media insert body array cannot be empty.")
+        return [_normalize_media_scalar_or_field(item) for item in value]
+    return [_normalize_media_scalar_or_field(value)]
 
 
 def _parameter_path_from_id(parameter_id: int) -> str:
@@ -245,6 +279,24 @@ async def _clip_connection_state(client: ResolumeClient, layer_index: int, clip_
         if isinstance(value, str):
             return value
     return None
+
+
+async def _clip_material_state(client: ResolumeClient, layer_index: int, clip_index: int) -> dict[str, Any]:
+    payload = await client.request("GET", f"/composition/layers/{layer_index}/clips/{clip_index}")
+    body = _extract_body(payload)
+    if not isinstance(body, dict):
+        return {"connected": None, "name": None, "has_video": None, "has_audio": None, "payload": payload}
+    connected = body.get("connected", {}).get("value") if isinstance(body.get("connected"), dict) else None
+    name = body.get("name", {}).get("value") if isinstance(body.get("name"), dict) else body.get("name")
+    has_video = isinstance(body.get("video"), dict)
+    has_audio = isinstance(body.get("audio"), dict)
+    return {
+        "connected": connected,
+        "name": name,
+        "has_video": has_video,
+        "has_audio": has_audio,
+        "payload": payload,
+    }
 
 
 async def _get_embedded_collection(
@@ -1435,49 +1487,52 @@ async def get_active_clip(layer_index: int) -> str:
 
 @mcp.tool()
 async def open_clip(layer_index: int, clip_index: int, body_json: str = "") -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    parsed = _parse_json(body_json)
+    body = _normalize_media_scalar_or_field(parsed) if parsed is not None else None
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/open", body=body)
     return _json_response(result)
 
 
 @mcp.tool()
 async def open_clip_file(layer_index: int, clip_index: int, body_json: str) -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    body = _normalize_media_scalar_or_field(_parse_json(body_json))
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/openfile", body=body)
     return _json_response(result)
 
 
 @mcp.tool()
 async def insert_clip(layer_index: int, clip_index: int, body_json: str) -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    body = _normalize_media_insert_body(_parse_json(body_json))
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/insert", body=body)
     return _json_response(result)
 
 
 @mcp.tool()
 async def open_clip_in_selected_slot(body_json: str) -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    parsed = _parse_json(body_json)
+    body = _normalize_media_scalar_or_field(parsed) if parsed is not None else None
     result = await _client().request("POST", "/composition/clips/open", body=body)
     return _json_response(result)
 
 
 @mcp.tool()
 async def open_selected_clip(body_json: str = "") -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    parsed = _parse_json(body_json)
+    body = _normalize_media_scalar_or_field(parsed) if parsed is not None else None
     result = await _client().request("POST", "/composition/clips/selected/open", body=body)
     return _json_response(result)
 
 
 @mcp.tool()
 async def open_selected_clip_file(body_json: str) -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    body = _normalize_media_scalar_or_field(_parse_json(body_json))
     result = await _client().request("POST", "/composition/clips/selected/openfile", body=body)
     return _json_response(result)
 
 
 @mcp.tool()
 async def insert_selected_clip(body_json: str) -> str:
-    body = _optional_json_object(body_json, field_name="body_json")
+    body = _normalize_media_insert_body(_parse_json(body_json))
     result = await _client().request("POST", "/composition/clips/selected/insert", body=body)
     return _json_response(result)
 
@@ -2278,8 +2333,32 @@ async def disconnect_clip(layer_index: int, clip_index: int) -> str:
 
 @mcp.tool()
 async def clear_clip(layer_index: int, clip_index: int) -> str:
-    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/clear")
-    return _json_response(result)
+    client = _client()
+    before = await _clip_material_state(client, layer_index, clip_index)
+    response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/clear")
+    after = await _clip_material_state(client, layer_index, clip_index)
+    cleared = after["connected"] == "Empty" and not after["name"] and not after["has_video"] and not after["has_audio"]
+    return _json_response(
+        {
+            "layer_index": layer_index,
+            "clip_index": clip_index,
+            "response": response,
+            "before_state": {
+                "connected": before["connected"],
+                "name": before["name"],
+                "has_video": before["has_video"],
+                "has_audio": before["has_audio"],
+            },
+            "after_state": {
+                "connected": after["connected"],
+                "name": after["name"],
+                "has_video": after["has_video"],
+                "has_audio": after["has_audio"],
+            },
+            "cleared": cleared,
+            "note": None if cleared else "Clip retained media state after clear request on this Resolume build.",
+        }
+    )
 
 
 @mcp.tool()
