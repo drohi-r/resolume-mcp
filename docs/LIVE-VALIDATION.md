@@ -87,3 +87,9 @@ Scope note:
   - parameter-by-id actions
   - trigger-style action endpoints
 - Any named websocket helper that assumes arbitrary parameter paths should be treated carefully until it is converted to parameter-id resolution or verified live.
+- On a real loaded media clip (`layer 1 / clip 1`) on this machine:
+  - `trigger_clip` moved the clip from `Disconnected` to `Connected`
+  - `set_clip_speed` resolved and wrote through `/parameter/by-id/{id}`
+  - `set_clip_transport_position` resolved through `transport/position` and wrote successfully, but position naturally advances during playback so exact post-write equality should not be expected while the clip is running
+  - `disconnect_clip` did not actually disconnect the clip even though the `POST /connect` request returned `204`
+  - clip video effect inspection is reliable through the embedded clip payload when the clip exposes a populated `video.effects` list

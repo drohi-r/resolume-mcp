@@ -117,6 +117,28 @@ def _effect_scope_path(scope: str, index: int | None = None, *, layer_index: int
     raise ValueError("scope must be one of: composition, layer, selected-layer, group, selected-group, clip, selected-clip.")
 
 
+def _extract_effect_from_scope_payload(payload: Any, effect_kind: str, effect_index: int) -> dict[str, Any]:
+    body = _extract_body(payload)
+    if not isinstance(body, dict):
+        raise ValueError("REST payload body must be a JSON object to resolve an effect.")
+
+    kind_node = body.get(effect_kind)
+    if not isinstance(kind_node, dict):
+        raise ValueError(f"Scope payload does not expose a '{effect_kind}' node.")
+
+    effects = kind_node.get("effects")
+    if not isinstance(effects, list):
+        raise ValueError(f"Scope payload does not expose an '{effect_kind}.effects' list.")
+
+    if effect_index < 1 or effect_index > len(effects):
+        raise IndexError(f"effect_index {effect_index} is out of range for the current {effect_kind} effects list.")
+
+    effect = effects[effect_index - 1]
+    if not isinstance(effect, dict):
+        raise ValueError("Resolved effect entry was not a JSON object.")
+    return effect
+
+
 def _lookup_parameter_node(payload: Any, parameter_suffix: str, aliases: tuple[str, ...] = ()) -> dict[str, Any]:
     body = _extract_body(payload)
     if not isinstance(body, dict):
@@ -212,6 +234,17 @@ async def _resolved_get_or_error(
             "parameter_suffix": parameter_suffix,
             "aliases": list(aliases),
         }
+
+
+async def _clip_connection_state(client: ResolumeClient, layer_index: int, clip_index: int) -> str | None:
+    rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
+    payload = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="connected")
+    response = payload.get("response", {}).get("response")
+    if isinstance(response, dict):
+        value = response.get("value")
+        if isinstance(value, str):
+            return value
+    return None
 
 
 async def _get_embedded_collection(
@@ -1558,8 +1591,21 @@ async def disconnect_clips(layer_index: int, clip_indices_json: str) -> str:
     results: list[dict[str, Any]] = []
     client = _client()
     for clip_index in clip_indices:
+        before_state = await _clip_connection_state(client, layer_index, clip_index)
         response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
-        results.append({"layer_index": layer_index, "clip_index": clip_index, "response": response})
+        after_state = await _clip_connection_state(client, layer_index, clip_index)
+        disconnected = after_state in {"Disconnected", "Empty"}
+        results.append(
+            {
+                "layer_index": layer_index,
+                "clip_index": clip_index,
+                "response": response,
+                "before_state": before_state,
+                "after_state": after_state,
+                "disconnected": disconnected,
+                "note": None if disconnected else "Clip remained connected after disconnect request on this Resolume build.",
+            }
+        )
     return _json_response({"results": results})
 
 
@@ -2212,8 +2258,22 @@ async def trigger_clip(layer_index: int, clip_index: int) -> str:
 
 @mcp.tool()
 async def disconnect_clip(layer_index: int, clip_index: int) -> str:
-    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
-    return _json_response(result)
+    client = _client()
+    before_state = await _clip_connection_state(client, layer_index, clip_index)
+    response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
+    after_state = await _clip_connection_state(client, layer_index, clip_index)
+    disconnected = after_state in {"Disconnected", "Empty"}
+    return _json_response(
+        {
+            "layer_index": layer_index,
+            "clip_index": clip_index,
+            "response": response,
+            "before_state": before_state,
+            "after_state": after_state,
+            "disconnected": disconnected,
+            "note": None if disconnected else "Clip remained connected after disconnect request on this Resolume build.",
+        }
+    )
 
 
 @mcp.tool()
@@ -2628,8 +2688,32 @@ async def get_effect(
 ) -> str:
     base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
     kind = _effect_kind_path(effect_kind)
-    result = await _client().request("GET", f"{base}/effects/{kind}/{effect_index}")
-    return _json_response(result)
+    client = _client()
+    scope_payload = await client.request("GET", base)
+    try:
+        effect = _extract_effect_from_scope_payload(scope_payload, kind, effect_index)
+        payload: dict[str, Any] = {
+            "ok": True,
+            "path": f"/api/v1{base}/effects/{kind}/{effect_index}",
+            "scope_path": scope_payload.get("path", base),
+            "fallback_used": True,
+            "effect_kind": kind,
+            "effect_index": effect_index,
+            "body": effect,
+            "scope_payload": scope_payload,
+        }
+    except Exception as exc:
+        payload = {
+            "ok": False,
+            "path": f"/api/v1{base}/effects/{kind}/{effect_index}",
+            "scope_path": scope_payload.get("path", base),
+            "fallback_used": True,
+            "effect_kind": kind,
+            "effect_index": effect_index,
+            "error": str(exc),
+            "scope_payload": scope_payload,
+        }
+    return _json_response(payload)
 
 
 @mcp.tool()

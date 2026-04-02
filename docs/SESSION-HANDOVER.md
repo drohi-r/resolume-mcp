@@ -17,6 +17,9 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - composition, layer, clip, and deck parameter helpers are now aligned to `/parameter/by-id/{id}`
   - some collection endpoints return `404` even though the same data is embedded in parent objects
   - named list/snapshot/audit helpers now fall back to embedded `/composition` and `/composition/layers/{n}` data where needed
+  - `trigger_clip` is live-proven on a loaded media clip
+  - `set_clip_speed` and `set_clip_transport_position` are live-proven on a loaded media clip, with the normal caveat that position keeps advancing while playback runs
+  - `disconnect_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip remains connected
   - Advanced Output HTTP paths currently return `404`
   - Advanced Output is persisted locally as XML in `~/Documents/Resolume Arena/Preferences`
   - those XML path findings are macOS-specific and should be reconfigured or revalidated on Windows hosts

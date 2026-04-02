@@ -354,12 +354,21 @@ async def test_disconnect_clip(mock_client_factory):
     from resolume_mcp.server import disconnect_clip
 
     fake = MagicMock()
-    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/1/clips/2/connect"})
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"connected": {"id": 3001}}},
+        {"ok": True, "path": "/api/v1/composition/layers/1/clips/2/connect"},
+        {"body": {"connected": {"id": 3001}}},
+    ])
+    fake.websocket_action = AsyncMock(side_effect=[
+        {"response": {"value": "Connected"}},
+        {"response": {"value": "Connected"}},
+    ])
     mock_client_factory.return_value = fake
 
     payload = json.loads(await disconnect_clip(1, 2))
-    assert payload["ok"] is True
-    fake.request.assert_awaited_once_with("POST", "/composition/layers/1/clips/2/connect", body=False)
+    assert payload["response"]["ok"] is True
+    assert payload["disconnected"] is False
+    fake.request.assert_any_await("POST", "/composition/layers/1/clips/2/connect", body=False)
 
 
 @pytest.mark.asyncio
@@ -458,13 +467,25 @@ async def test_disconnect_clips(mock_client_factory):
 
     fake = MagicMock()
     fake.request = AsyncMock(side_effect=[
+        {"body": {"connected": {"id": 3001}}},
         {"path": "/api/v1/composition/layers/1/clips/2/connect"},
+        {"body": {"connected": {"id": 3001}}},
+        {"body": {"connected": {"id": 3002}}},
         {"path": "/api/v1/composition/layers/1/clips/3/connect"},
+        {"body": {"connected": {"id": 3002}}},
+    ])
+    fake.websocket_action = AsyncMock(side_effect=[
+        {"response": {"value": "Connected"}},
+        {"response": {"value": "Connected"}},
+        {"response": {"value": "Disconnected"}},
+        {"response": {"value": "Disconnected"}},
     ])
     mock_client_factory.return_value = fake
 
     payload = json.loads(await disconnect_clips(1, "[2,3]"))
     assert len(payload["results"]) == 2
+    assert payload["results"][0]["disconnected"] is False
+    assert payload["results"][1]["disconnected"] is True
     fake.request.assert_any_await("POST", "/composition/layers/1/clips/2/connect", body=False)
 
 
@@ -1765,11 +1786,24 @@ async def test_get_clip_effect(mock_client_factory):
     from resolume_mcp.server import get_effect
 
     fake = MagicMock()
-    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/1/clips/3/effects/audio/2"})
+    fake.request = AsyncMock(return_value={
+        "ok": True,
+        "path": "/api/v1/composition/layers/1/clips/3",
+        "body": {
+            "audio": {
+                "effects": [
+                    {"name": "EQ"},
+                    {"name": "Reverb", "display_name": "Big Verb"},
+                ]
+            }
+        },
+    })
     mock_client_factory.return_value = fake
 
     payload = json.loads(await get_effect("clip", "audio", 2, layer_index=1, clip_index=3))
     assert payload["path"] == "/api/v1/composition/layers/1/clips/3/effects/audio/2"
+    assert payload["fallback_used"] is True
+    assert payload["body"]["display_name"] == "Big Verb"
 
 
 @pytest.mark.asyncio
