@@ -143,10 +143,13 @@ async def test_get_composition_overview(mock_client_factory):
 
     fake = MagicMock()
     fake.request = AsyncMock(side_effect=[
-        {"path": "/api/v1/composition"},
-        {"path": "/api/v1/composition/layers"},
-        {"path": "/api/v1/composition/columns"},
-        {"path": "/api/v1/composition/layergroups"},
+        {"path": "/api/v1/composition", "body": {"layers": [{"id": 11}], "columns": [{"id": 22}], "layergroups": [{"id": 33}], "decks": [{"id": 1}]}},
+        {"path": "/api/v1/composition/layers", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layers"},
+        {"path": "/api/v1/composition", "body": {"layers": [{"id": 11}], "columns": [{"id": 22}], "layergroups": [{"id": 33}], "decks": [{"id": 1}]}},
+        {"path": "/api/v1/composition/columns", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/columns"},
+        {"path": "/api/v1/composition", "body": {"layers": [{"id": 11}], "columns": [{"id": 22}], "layergroups": [{"id": 33}], "decks": [{"id": 1}]}},
+        {"path": "/api/v1/composition/layergroups", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layergroups"},
+        {"path": "/api/v1/composition", "body": {"layers": [{"id": 11}], "columns": [{"id": 22}], "layergroups": [{"id": 33}], "decks": [{"id": 1}]}},
         {"path": "/api/v1/composition", "body": {"decks": [{"id": 1}]}},
     ])
     mock_client_factory.return_value = fake
@@ -154,6 +157,8 @@ async def test_get_composition_overview(mock_client_factory):
     payload = json.loads(await get_composition_overview())
     assert payload["composition"]["path"] == "/api/v1/composition"
     assert payload["decks"]["body"] == [{"id": 1}]
+    assert payload["layers"]["fallback_used"] is True
+    assert payload["layers"]["body"] == [{"id": 11}]
 
 
 @pytest.mark.asyncio
@@ -163,10 +168,13 @@ async def test_audit_composition(mock_client_factory):
 
     fake = MagicMock()
     fake.request = AsyncMock(side_effect=[
-        {"path": "/api/v1/composition", "body": {"tempocontroller": {"tempo": {"id": 1001, "value": 0}}}},
-        {"body": []},
-        {"body": []},
-        {"body": []},
+        {"path": "/api/v1/composition", "body": {"tempocontroller": {"tempo": {"id": 1001, "value": 0}}, "layers": [], "columns": [], "layergroups": []}},
+        {"path": "/api/v1/composition/layers", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layers"},
+        {"path": "/api/v1/composition", "body": {"tempocontroller": {"tempo": {"id": 1001, "value": 0}}, "layers": [], "columns": [], "layergroups": []}},
+        {"path": "/api/v1/composition/columns", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/columns"},
+        {"path": "/api/v1/composition", "body": {"tempocontroller": {"tempo": {"id": 1001, "value": 0}}, "layers": [], "columns": [], "layergroups": []}},
+        {"path": "/api/v1/composition/layergroups", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layergroups"},
+        {"path": "/api/v1/composition", "body": {"tempocontroller": {"tempo": {"id": 1001, "value": 0}}, "layers": [], "columns": [], "layergroups": []}},
         {"body": {"decks": []}},
         {"body": {"tempocontroller": {"tempo": {"id": 1001, "value": 0}}}},
     ])
@@ -227,11 +235,50 @@ async def test_list_columns(mock_client_factory):
     from resolume_mcp.server import list_columns
 
     fake = MagicMock()
-    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/columns"})
+    fake.request = AsyncMock(side_effect=[
+        {"path": "/api/v1/composition/columns", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/columns"},
+        {"path": "/api/v1/composition", "body": {"columns": [{"id": 22}]}}
+    ])
     mock_client_factory.return_value = fake
 
     payload = json.loads(await list_columns())
     assert payload["path"] == "/api/v1/composition/columns"
+    assert payload["fallback_used"] is True
+    assert payload["body"] == [{"id": 22}]
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_list_layers_falls_back_to_composition(mock_client_factory):
+    from resolume_mcp.server import list_layers
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"path": "/api/v1/composition/layers", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layers"},
+        {"path": "/api/v1/composition", "body": {"layers": [{"id": 11}]}}
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await list_layers())
+    assert payload["fallback_used"] is True
+    assert payload["body"] == [{"id": 11}]
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_list_clips_falls_back_to_layer(mock_client_factory):
+    from resolume_mcp.server import list_clips
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"path": "/api/v1/composition/layers/2/clips", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layers/2/clips"},
+        {"path": "/api/v1/composition/layers/2", "body": {"clips": [{"id": 4004}]}}
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await list_clips(2))
+    assert payload["fallback_used"] is True
+    assert payload["body"] == [{"id": 4004}]
 
 
 @pytest.mark.asyncio
@@ -257,7 +304,8 @@ async def test_get_layer_snapshot(mock_client_factory):
     fake = MagicMock()
     fake.request = AsyncMock(side_effect=[
         {"path": "/api/v1/composition/layers/2", "body": {"video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
-        {"path": "/api/v1/composition/layers/2/clips"},
+        {"path": "/api/v1/composition/layers/2/clips", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layers/2/clips"},
+        {"path": "/api/v1/composition/layers/2", "body": {"clips": [{"id": 4004}], "video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
         {"body": {"video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
         {"body": {"video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
     ])
@@ -270,6 +318,8 @@ async def test_get_layer_snapshot(mock_client_factory):
     payload = json.loads(await get_layer_snapshot(2))
     assert payload["layer"]["path"] == "/api/v1/composition/layers/2"
     assert payload["clips"]["path"] == "/api/v1/composition/layers/2/clips"
+    assert payload["clips"]["fallback_used"] is True
+    assert payload["clips"]["body"] == [{"id": 4004}]
     assert payload["opacity"]["request"]["parameter"] == "/parameter/by-id/2002"
 
 
@@ -281,7 +331,8 @@ async def test_audit_layer(mock_client_factory):
     fake = MagicMock()
     fake.request = AsyncMock(side_effect=[
         {"path": "/api/v1/composition/layers/1", "body": {"video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
-        {"body": []},
+        {"path": "/api/v1/composition/layers/1/clips", "status_code": 404, "ok": False, "content_type": "application/json", "body": "Not Found", "url": "http://127.0.0.1:8080/api/v1/composition/layers/1/clips"},
+        {"path": "/api/v1/composition/layers/1", "body": {"clips": [], "video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
         {"body": {"video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
         {"body": {"video": {"opacity": {"id": 2002}}, "bypassed": {"id": 2003}}},
     ])

@@ -26,6 +26,15 @@ Scope note:
 - Selected-object read endpoints confirmed on this machine:
   - `/api/v1/composition/layers/selected`
   - `/api/v1/composition/clips/selected`
+- Direct collection endpoints for some core surfaces returned `404` on this machine:
+  - `/api/v1/composition/layers`
+  - `/api/v1/composition/columns`
+  - `/api/v1/composition/layergroups`
+  - `/api/v1/composition/layers/1/clips`
+- Those collections are still available in embedded form through:
+  - `/api/v1/composition`
+  - `/api/v1/composition/layers/{n}`
+- The named list/snapshot/audit helpers now fall back to the embedded payloads on this build.
 - The following binary-visible paths returned `404` on this machine during safe live reads:
   - `/api/v1/composition/layergroups/selected`
   - `/api/v1/composition/layers/1/clips/active`

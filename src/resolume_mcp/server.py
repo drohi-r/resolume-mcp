@@ -214,6 +214,37 @@ async def _resolved_get_or_error(
         }
 
 
+async def _get_embedded_collection(
+    client: ResolumeClient,
+    *,
+    direct_path: str,
+    fallback_path: str,
+    collection_key: str,
+) -> dict[str, Any]:
+    direct = await client.request("GET", direct_path)
+    if direct.get("ok") and isinstance(direct.get("body"), list):
+        return direct
+
+    fallback = await client.request("GET", fallback_path)
+    fallback_body = _extract_body(fallback)
+    collection: Any = None
+    if isinstance(fallback_body, dict):
+        collection = fallback_body.get(collection_key)
+
+    return {
+        "method": "GET",
+        "path": direct.get("path", direct_path),
+        "url": direct.get("url"),
+        "status_code": direct.get("status_code"),
+        "ok": isinstance(collection, list),
+        "content_type": direct.get("content_type", fallback.get("content_type", "")),
+        "body": collection if isinstance(collection, list) else [],
+        "fallback_used": True,
+        "fallback_source": fallback,
+        "direct_response": direct,
+    }
+
+
 def _advanced_output_preferences() -> AdvancedOutputPreferences:
     return AdvancedOutputPreferences.load(load_config().advanced_output_xml_path)
 
@@ -756,21 +787,37 @@ def diff_advanced_output_preferences(other_xml_path: str) -> str:
 
 @mcp.tool()
 async def list_layers() -> str:
-    result = await _client().request("GET", "/composition/layers")
+    client = _client()
+    result = await _get_embedded_collection(
+        client,
+        direct_path="/composition/layers",
+        fallback_path="/composition",
+        collection_key="layers",
+    )
     return _json_response(result)
 
 
 @mcp.tool()
 async def list_columns() -> str:
-    result = await _client().request("GET", "/composition/columns")
+    client = _client()
+    result = await _get_embedded_collection(
+        client,
+        direct_path="/composition/columns",
+        fallback_path="/composition",
+        collection_key="columns",
+    )
     return _json_response(result)
 
 
 @mcp.tool()
 async def list_groups() -> str:
-    result = await _client().request("GET", "/composition")
-    if isinstance(result.get("body"), dict):
-        result["body"] = result["body"].get("layergroups", [])
+    client = _client()
+    result = await _get_embedded_collection(
+        client,
+        direct_path="/composition/layergroups",
+        fallback_path="/composition",
+        collection_key="layergroups",
+    )
     return _json_response(result)
 
 
@@ -987,9 +1034,24 @@ async def add_layer(body_json: str = "") -> str:
 async def get_composition_overview() -> str:
     client = _client()
     composition = await client.request("GET", "/composition")
-    layers = await client.request("GET", "/composition/layers")
-    columns = await client.request("GET", "/composition/columns")
-    groups = await client.request("GET", "/composition/layergroups")
+    layers = await _get_embedded_collection(
+        client,
+        direct_path="/composition/layers",
+        fallback_path="/composition",
+        collection_key="layers",
+    )
+    columns = await _get_embedded_collection(
+        client,
+        direct_path="/composition/columns",
+        fallback_path="/composition",
+        collection_key="columns",
+    )
+    groups = await _get_embedded_collection(
+        client,
+        direct_path="/composition/layergroups",
+        fallback_path="/composition",
+        collection_key="layergroups",
+    )
     decks = await client.request("GET", "/composition")
     if isinstance(decks.get("body"), dict):
         decks["body"] = decks["body"].get("decks", [])
@@ -1008,7 +1070,12 @@ async def get_composition_overview() -> str:
 async def get_layer_snapshot(layer_index: int) -> str:
     client = _client()
     layer = await client.request("GET", f"/composition/layers/{layer_index}")
-    clips = await client.request("GET", f"/composition/layers/{layer_index}/clips")
+    clips = await _get_embedded_collection(
+        client,
+        direct_path=f"/composition/layers/{layer_index}/clips",
+        fallback_path=f"/composition/layers/{layer_index}",
+        collection_key="clips",
+    )
     opacity = await _resolved_get_or_error(
         client,
         rest_path=f"/composition/layers/{layer_index}",
@@ -1034,7 +1101,12 @@ async def get_layer_snapshot(layer_index: int) -> str:
 async def audit_layer(layer_index: int) -> str:
     client = _client()
     layer = await client.request("GET", f"/composition/layers/{layer_index}")
-    clips = await client.request("GET", f"/composition/layers/{layer_index}/clips")
+    clips = await _get_embedded_collection(
+        client,
+        direct_path=f"/composition/layers/{layer_index}/clips",
+        fallback_path=f"/composition/layers/{layer_index}",
+        collection_key="clips",
+    )
     opacity = await _resolved_get_or_error(
         client,
         rest_path=f"/composition/layers/{layer_index}",
@@ -1086,9 +1158,24 @@ async def audit_layer(layer_index: int) -> str:
 async def audit_composition() -> str:
     client = _client()
     composition = await client.request("GET", "/composition")
-    layers = await client.request("GET", "/composition/layers")
-    columns = await client.request("GET", "/composition/columns")
-    groups = await client.request("GET", "/composition/layergroups")
+    layers = await _get_embedded_collection(
+        client,
+        direct_path="/composition/layers",
+        fallback_path="/composition",
+        collection_key="layers",
+    )
+    columns = await _get_embedded_collection(
+        client,
+        direct_path="/composition/columns",
+        fallback_path="/composition",
+        collection_key="columns",
+    )
+    groups = await _get_embedded_collection(
+        client,
+        direct_path="/composition/layergroups",
+        fallback_path="/composition",
+        collection_key="layergroups",
+    )
     decks = await client.request("GET", "/composition")
     if isinstance(decks.get("body"), dict):
         decks["body"] = decks["body"].get("decks", [])
@@ -1291,7 +1378,13 @@ async def close_deck(deck_index: int, body_json: str = "") -> str:
 
 @mcp.tool()
 async def list_clips(layer_index: int) -> str:
-    result = await _client().request("GET", f"/composition/layers/{layer_index}/clips")
+    client = _client()
+    result = await _get_embedded_collection(
+        client,
+        direct_path=f"/composition/layers/{layer_index}/clips",
+        fallback_path=f"/composition/layers/{layer_index}",
+        collection_key="clips",
+    )
     return _json_response(result)
 
 
