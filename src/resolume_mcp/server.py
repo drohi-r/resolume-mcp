@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -283,6 +284,10 @@ async def _clip_connection_state(client: ResolumeClient, layer_index: int, clip_
 
 async def _clip_material_state(client: ResolumeClient, layer_index: int, clip_index: int) -> dict[str, Any]:
     payload = await client.request("GET", f"/composition/layers/{layer_index}/clips/{clip_index}")
+    return _clip_material_state_from_payload(payload)
+
+
+def _clip_material_state_from_payload(payload: Any) -> dict[str, Any]:
     body = _extract_body(payload)
     if not isinstance(body, dict):
         return {"connected": None, "name": None, "has_video": None, "has_audio": None, "payload": payload}
@@ -297,6 +302,82 @@ async def _clip_material_state(client: ResolumeClient, layer_index: int, clip_in
         "has_audio": has_audio,
         "payload": payload,
     }
+
+
+def _clip_material_state_from_clip_body(clip_body: Any, *, payload: Any) -> dict[str, Any]:
+    if not isinstance(clip_body, dict):
+        return {"connected": None, "name": None, "has_video": None, "has_audio": None, "payload": payload}
+    connected = clip_body.get("connected", {}).get("value") if isinstance(clip_body.get("connected"), dict) else None
+    name = clip_body.get("name", {}).get("value") if isinstance(clip_body.get("name"), dict) else clip_body.get("name")
+    has_video = isinstance(clip_body.get("video"), dict)
+    has_audio = isinstance(clip_body.get("audio"), dict)
+    return {
+        "connected": connected,
+        "name": name,
+        "has_video": has_video,
+        "has_audio": has_audio,
+        "payload": payload,
+    }
+
+
+def _clip_material_state_cleared(state: dict[str, Any]) -> bool:
+    return state["connected"] == "Empty" and not state["name"] and not state["has_video"] and not state["has_audio"]
+
+
+async def _poll_clip_material_state(
+    client: ResolumeClient,
+    *,
+    layer_index: int,
+    clip_index: int,
+    attempts: int = 4,
+    delay_s: float = 0.2,
+) -> dict[str, Any]:
+    latest = await _clip_material_state(client, layer_index, clip_index)
+    for _ in range(attempts - 1):
+        if _clip_material_state_cleared(latest):
+            break
+        await asyncio.sleep(delay_s)
+        latest = await _clip_material_state(client, layer_index, clip_index)
+    return latest
+
+
+async def _poll_selected_clip_material_state_by_id(
+    client: ResolumeClient,
+    *,
+    clip_id: int,
+    attempts: int = 4,
+    delay_s: float = 0.2,
+) -> dict[str, Any]:
+    latest = _clip_material_state_from_payload(await client.request("GET", f"/composition/clips/by-id/{clip_id}"))
+    for _ in range(attempts - 1):
+        if _clip_material_state_cleared(latest):
+            break
+        await asyncio.sleep(delay_s)
+        latest = _clip_material_state_from_payload(await client.request("GET", f"/composition/clips/by-id/{clip_id}"))
+    return latest
+
+
+async def _selected_layer_first_clip_material_state(client: ResolumeClient) -> dict[str, Any]:
+    payload = await client.request("GET", "/composition/layers/selected")
+    body = _extract_body(payload)
+    clips = body.get("clips") if isinstance(body, dict) else None
+    first_clip = clips[0] if isinstance(clips, list) and clips else None
+    return _clip_material_state_from_clip_body(first_clip, payload=payload)
+
+
+async def _poll_selected_layer_first_clip_material_state(
+    client: ResolumeClient,
+    *,
+    attempts: int = 4,
+    delay_s: float = 0.2,
+) -> dict[str, Any]:
+    latest = await _selected_layer_first_clip_material_state(client)
+    for _ in range(attempts - 1):
+        if _clip_material_state_cleared(latest):
+            break
+        await asyncio.sleep(delay_s)
+        latest = await _selected_layer_first_clip_material_state(client)
+    return latest
 
 
 async def _get_embedded_collection(
@@ -1866,6 +1947,17 @@ async def select_columns(column_indices_json: str) -> str:
 
 @mcp.tool()
 async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
+    layer_indices: list[Any] = []
+    if layer_indices_json.strip():
+        layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
+
+    clip_pairs: list[Any] = []
+    if clip_pairs_json.strip():
+        clip_pairs = _parse_json_list(clip_pairs_json, field_name="clip_pairs_json")
+        for pair in clip_pairs:
+            if not isinstance(pair, dict) or "layer_index" not in pair or "clip_index" not in pair:
+                raise ValueError("Each clip pair must include layer_index and clip_index.")
+
     client = _client()
     composition = await client.request("GET", "/composition")
     tempo = await _resolved_get_or_error(
@@ -1875,8 +1967,7 @@ async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: 
     )
 
     layers: list[dict[str, Any]] = []
-    if layer_indices_json.strip():
-        layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
+    if layer_indices:
         for layer_index in layer_indices:
             rest_path = f"/composition/layers/{layer_index}"
             layers.append(
@@ -1888,11 +1979,8 @@ async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: 
             )
 
     clips: list[dict[str, Any]] = []
-    if clip_pairs_json.strip():
-        clip_pairs = _parse_json_list(clip_pairs_json, field_name="clip_pairs_json")
+    if clip_pairs:
         for pair in clip_pairs:
-            if not isinstance(pair, dict) or "layer_index" not in pair or "clip_index" not in pair:
-                raise ValueError("Each clip pair must include layer_index and clip_index.")
             layer_index = pair["layer_index"]
             clip_index = pair["clip_index"]
             rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
@@ -2406,8 +2494,8 @@ async def clear_clip(layer_index: int, clip_index: int) -> str:
     client = _client()
     before = await _clip_material_state(client, layer_index, clip_index)
     response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/clear")
-    after = await _clip_material_state(client, layer_index, clip_index)
-    cleared = after["connected"] == "Empty" and not after["name"] and not after["has_video"] and not after["has_audio"]
+    after = await _poll_clip_material_state(client, layer_index=layer_index, clip_index=clip_index)
+    cleared = _clip_material_state_cleared(after)
     return _json_response(
         {
             "layer_index": layer_index,
@@ -2433,8 +2521,42 @@ async def clear_clip(layer_index: int, clip_index: int) -> str:
 
 @mcp.tool()
 async def clear_selected_clip() -> str:
-    result = await _client().request("POST", "/composition/clips/selected/clear")
-    return _json_response(result)
+    client = _client()
+    selected_payload = await client.request("GET", "/composition/clips/selected")
+    selected_body = _extract_body(selected_payload)
+    clip_id = selected_body.get("id") if isinstance(selected_body, dict) else None
+    before_state = None
+    if isinstance(selected_body, dict):
+        before_state = {
+            "connected": selected_body.get("connected", {}).get("value") if isinstance(selected_body.get("connected"), dict) else None,
+            "name": selected_body.get("name", {}).get("value") if isinstance(selected_body.get("name"), dict) else selected_body.get("name"),
+            "has_video": isinstance(selected_body.get("video"), dict),
+            "has_audio": isinstance(selected_body.get("audio"), dict),
+        }
+    response = await client.request("POST", "/composition/clips/selected/clear")
+    after_state = None
+    cleared = None
+    note = None
+    if isinstance(clip_id, int):
+        after = await _poll_selected_clip_material_state_by_id(client, clip_id=clip_id)
+        after_state = {
+            "connected": after["connected"],
+            "name": after["name"],
+            "has_video": after["has_video"],
+            "has_audio": after["has_audio"],
+        }
+        cleared = _clip_material_state_cleared(after)
+        note = None if cleared else "Selected clip retained media state after clear request on this Resolume build."
+    return _json_response(
+        {
+            "clip_id": clip_id,
+            "response": response,
+            "before_state": before_state,
+            "after_state": after_state,
+            "cleared": cleared,
+            "note": note,
+        }
+    )
 
 
 @mcp.tool()
@@ -2491,14 +2613,59 @@ async def clear_selected_layer() -> str:
 
 @mcp.tool()
 async def clear_layer_clips(layer_index: int) -> str:
-    result = await _client().request("POST", f"/composition/layers/{layer_index}/clearclips")
-    return _json_response(result)
+    client = _client()
+    before = await _clip_material_state(client, layer_index, 1)
+    response = await client.request("POST", f"/composition/layers/{layer_index}/clearclips")
+    after = await _poll_clip_material_state(client, layer_index=layer_index, clip_index=1)
+    cleared = _clip_material_state_cleared(after)
+    return _json_response(
+        {
+            "layer_index": layer_index,
+            "response": response,
+            "before_state": {
+                "connected": before["connected"],
+                "name": before["name"],
+                "has_video": before["has_video"],
+                "has_audio": before["has_audio"],
+            },
+            "after_state": {
+                "connected": after["connected"],
+                "name": after["name"],
+                "has_video": after["has_video"],
+                "has_audio": after["has_audio"],
+            },
+            "cleared": cleared,
+            "note": None if cleared else "Layer retained clip media state after clearclips request on this Resolume build.",
+        }
+    )
 
 
 @mcp.tool()
 async def clear_selected_layer_clips() -> str:
-    result = await _client().request("POST", "/composition/layers/selected/clearclips")
-    return _json_response(result)
+    client = _client()
+    before = await _selected_layer_first_clip_material_state(client)
+    response = await client.request("POST", "/composition/layers/selected/clearclips")
+    after = await _poll_selected_layer_first_clip_material_state(client)
+    cleared = _clip_material_state_cleared(after)
+    return _json_response(
+        {
+            "response": response,
+            "before_state": {
+                "connected": before["connected"],
+                "name": before["name"],
+                "has_video": before["has_video"],
+                "has_audio": before["has_audio"],
+            },
+            "after_state": {
+                "connected": after["connected"],
+                "name": after["name"],
+                "has_video": after["has_video"],
+                "has_audio": after["has_audio"],
+            },
+            "cleared": cleared,
+            "note": None if cleared else "Selected layer retained clip media state after clearclips request on this Resolume build.",
+        }
+    )
 
 
 @mcp.tool()

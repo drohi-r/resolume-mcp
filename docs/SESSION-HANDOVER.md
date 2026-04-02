@@ -18,11 +18,12 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - named list/snapshot/audit helpers now fall back to embedded `/composition` and `/composition/layers/{n}` data where needed
   - `trigger_clip` is live-proven on a loaded media clip
   - `set_clip_speed` and `set_clip_transport_position` are live-proven on a loaded media clip, with the normal caveat that position keeps advancing while playback runs
-  - `disconnect_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip remains connected
+  - on `2026-04-02`, positional, selected, and by-id disconnect were all revalidated after triggering a real clip to `Connected`; all returned `204` but the clip remained connected
   - `insert_clip` is live-proven when given an array of `file://` URIs
   - `open` is now live-proven when the request body is sent as raw `text/plain` with a single `file:///...` URL
   - `openfile` shares the same documented `text/plain` contract but remains un-rechecked after the transport fix because the endpoint is deprecated upstream
-  - `clear_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip retains its media
+  - on `2026-04-02`, positional clear, selected clear, by-id clear, layer `clearclips`, and selected-layer `clearclips` were all revalidated live and did clear media on this build
+  - clear verification needs short post-call polling because an immediate read can still show stale `video` and `audio` nodes after the server already reports `204`
   - `effects/video/add/{offset}` is now live-proven on a temporary inserted slot when sent as raw `text/plain effect:///...`
   - clip-effect delete by grid position is also live-proven on the same slot
   - product, effects, sources, and file-info discovery endpoints are live-proven and now wrapped by named tools

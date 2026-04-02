@@ -515,13 +515,34 @@ async def test_clear_clip_reports_verified_state(mock_client_factory):
     fake.request = AsyncMock(side_effect=[
         {"body": {"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
         {"ok": True, "path": "/api/v1/composition/layers/1/clips/2/clear"},
-        {"body": {"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
+        {"body": {"name": {"value": ""}, "connected": {"value": "Empty"}, "video": {}, "audio": {}}},
+        {"body": {"name": {"value": ""}, "connected": {"value": "Empty"}}},
     ])
     mock_client_factory.return_value = fake
 
     payload = json.loads(await clear_clip(1, 2))
     assert payload["response"]["ok"] is True
-    assert payload["cleared"] is False
+    assert payload["cleared"] is True
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_clear_selected_clip_reports_verified_state(mock_client_factory):
+    from resolume_mcp.server import clear_selected_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"id": 1001, "name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
+        {"ok": True, "path": "/api/v1/composition/clips/selected/clear"},
+        {"body": {"id": 1001, "name": {"value": ""}, "connected": {"value": "Empty"}, "video": {}, "audio": {}}},
+        {"body": {"id": 1001, "name": {"value": ""}, "connected": {"value": "Empty"}}},
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await clear_selected_clip())
+    assert payload["response"]["ok"] is True
+    assert payload["clip_id"] == 1001
+    assert payload["cleared"] is True
 
 
 @pytest.mark.asyncio
@@ -2030,11 +2051,36 @@ async def test_clear_layer_clips(mock_client_factory):
     from resolume_mcp.server import clear_layer_clips
 
     fake = MagicMock()
-    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/6/clearclips"})
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}},
+        {"ok": True, "path": "/api/v1/composition/layers/6/clearclips"},
+        {"body": {"name": {"value": ""}, "connected": {"value": "Empty"}, "video": {}, "audio": {}}},
+        {"body": {"name": {"value": ""}, "connected": {"value": "Empty"}}},
+    ])
     mock_client_factory.return_value = fake
 
     payload = json.loads(await clear_layer_clips(6))
-    assert payload["path"] == "/api/v1/composition/layers/6/clearclips"
+    assert payload["response"]["path"] == "/api/v1/composition/layers/6/clearclips"
+    assert payload["cleared"] is True
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_clear_selected_layer_clips(mock_client_factory):
+    from resolume_mcp.server import clear_selected_layer_clips
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"clips": [{"name": {"value": "Loaded"}, "connected": {"value": "Disconnected"}, "video": {}, "audio": {}}]}},
+        {"ok": True, "path": "/api/v1/composition/layers/selected/clearclips"},
+        {"body": {"clips": [{"name": {"value": ""}, "connected": {"value": "Empty"}, "video": {}, "audio": {}}]}},
+        {"body": {"clips": [{"name": {"value": ""}, "connected": {"value": "Empty"}}]}},
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await clear_selected_layer_clips())
+    assert payload["response"]["path"] == "/api/v1/composition/layers/selected/clearclips"
+    assert payload["cleared"] is True
 
 
 @pytest.mark.asyncio

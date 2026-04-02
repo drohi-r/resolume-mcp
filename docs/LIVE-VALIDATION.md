@@ -92,7 +92,17 @@ Scope note:
   - `trigger_clip` moved the clip from `Disconnected` to `Connected`
   - `set_clip_speed` resolved and wrote through `/parameter/by-id/{id}`
   - `set_clip_transport_position` resolved through `transport/position` and wrote successfully, but position naturally advances during playback so exact post-write equality should not be expected while the clip is running
-  - `disconnect_clip` did not actually disconnect the clip even though the `POST /connect` request returned `204`
+  - on `2026-04-02`, disconnect was rechecked after first triggering the clip to `Connected`
+  - positional `POST /composition/layers/1/clips/1/connect` with `body=false` returned `204` but the clip stayed `Connected`
+  - selected `POST /composition/clips/selected/connect` with `body=false` returned `204` but the clip stayed `Connected`
+  - by-id `POST /composition/clips/by-id/{id}/connect` with `body=false` returned `204` but the clip stayed `Connected`
+  - on `2026-04-02`, the focused clear matrix was rechecked with short post-call polling:
+  - positional `POST /composition/layers/1/clips/1/clear` returned `204` and the clip settled to `Empty`
+  - selected `POST /composition/clips/selected/clear` returned `204` and the selected clip settled to `Empty`
+  - by-id `POST /composition/clips/by-id/{id}/clear` returned `204` and the clip settled to `Empty`
+  - layer `POST /composition/layers/1/clearclips` returned `204` and the layer slot settled to `Empty`
+  - selected-layer `POST /composition/layers/selected/clearclips` returned `204` and the selected layer slot settled to `Empty`
+  - the first immediate post-clear read can still show stale `video` and `audio` nodes even after `connected` flips to `Empty`, so clear verification should poll briefly before declaring failure
   - clip video effect inspection is reliable through the embedded clip payload when the clip exposes a populated `video.effects` list
 - On an empty target slot (`layer 1 / clip 2`) on this machine:
   - `insert_clip` works when the body is an array of `file://` URIs
@@ -100,7 +110,6 @@ Scope note:
   - `open` works when the request body is sent as raw `text/plain` containing a single `file:///...` or `source:///...` URL
   - the previous `open` failures were caused by sending quoted JSON strings instead of raw `text/plain`
   - `openfile` shares the same documented `text/plain` contract, but was not revalidated after the client transport fix because `open` is the preferred non-deprecated path
-  - `clear_clip` did not actually clear the inserted media even though the request returned `204`
   - `effects/video/add/{offset}` works when the request body is sent as raw `text/plain` with an effect URI such as `effect:///video/Blow`
   - `effects/video/{offset}` delete works on the same slot after the add test
   - `GET /effects`, `GET /sources`, and `POST /files` all work and are now wrapped by named tools
