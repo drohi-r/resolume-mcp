@@ -17,6 +17,8 @@ from .advanced_output_xml import (
     rename_slice_in_advanced_output,
     restore_advanced_output_bundle,
     set_advanced_output_soft_edge_power,
+    set_advanced_output_screen_output_device,
+    set_advanced_output_slice_vertices,
     windows_advanced_output_path_candidates,
 )
 from .client import ResolumeClient
@@ -546,6 +548,92 @@ def set_advanced_output_soft_edge_power_xml(value: float, backup_dir: str = "") 
     payload = set_advanced_output_soft_edge_power(
         advanced_output_xml_path=config.advanced_output_xml_path,
         value=value,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def set_advanced_output_screen_output_device_xml(
+    screen_index: int,
+    name: str,
+    device_id: str,
+    width: int,
+    height: int,
+    backup_dir: str = "",
+) -> str:
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = set_advanced_output_screen_output_device(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        screen_index=screen_index,
+        name=name,
+        device_id=device_id,
+        width=width,
+        height=height,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def set_advanced_output_slice_input_rect_xml(
+    screen_index: int,
+    slice_index: int,
+    vertices_json: str,
+    backup_dir: str = "",
+) -> str:
+    vertices = _parse_json_list(vertices_json, field_name="vertices_json")
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = set_advanced_output_slice_vertices(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        screen_index=screen_index,
+        slice_index=slice_index,
+        path="./InputRect",
+        vertices=vertices,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def set_advanced_output_slice_output_rect_xml(
+    screen_index: int,
+    slice_index: int,
+    vertices_json: str,
+    backup_dir: str = "",
+) -> str:
+    vertices = _parse_json_list(vertices_json, field_name="vertices_json")
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = set_advanced_output_slice_vertices(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        screen_index=screen_index,
+        slice_index=slice_index,
+        path="./OutputRect",
+        vertices=vertices,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def set_advanced_output_slice_homography_dst_xml(
+    screen_index: int,
+    slice_index: int,
+    vertices_json: str,
+    backup_dir: str = "",
+) -> str:
+    vertices = _parse_json_list(vertices_json, field_name="vertices_json")
+    config = load_config()
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = set_advanced_output_slice_vertices(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        screen_index=screen_index,
+        slice_index=slice_index,
+        path="./Warper/Homography/dst",
+        vertices=vertices,
         backup_dir=target_backup_dir,
     )
     return _json_response(payload)

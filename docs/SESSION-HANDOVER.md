@@ -76,6 +76,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
     - preview restore
     - backup-first restore
     - guarded XML edits for screen name, slice name, and soft-edge power
+    - guarded XML edits for output device, input rect, output rect, and homography destination
 
 ## Local skills currently present
 

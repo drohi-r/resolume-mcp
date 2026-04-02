@@ -67,6 +67,35 @@ def _vertices(parent: ET.Element, path: str) -> list[dict[str, float]]:
     return output
 
 
+def _set_vertices(parent: ET.Element, path: str, vertices: list[dict[str, float]]) -> None:
+    node = parent.find(path)
+    if node is None:
+        raise ValueError(f"Could not find XML node at path {path!r}.")
+    existing_vertices = node.findall("./v")
+    if existing_vertices and len(existing_vertices) != len(vertices):
+        raise ValueError(
+            f"Vertex count mismatch for {path!r}: expected {len(existing_vertices)}, got {len(vertices)}."
+        )
+    for vertex in list(existing_vertices):
+        node.remove(vertex)
+    for point in vertices:
+        x = point.get("x")
+        y = point.get("y")
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            raise ValueError("Each vertex must include numeric x and y values.")
+        ET.SubElement(node, "v", x=str(x), y=str(y))
+
+
+def _screen_elements(root: ET.Element) -> list[ET.Element]:
+    screens_parent = root.find("./screens")
+    return screens_parent.findall("./Screen") if screens_parent is not None else []
+
+
+def _slice_elements(screen: ET.Element) -> list[ET.Element]:
+    slices_parent = screen.find("./layers")
+    return slices_parent.findall("./Slice") if slices_parent is not None else []
+
+
 def _slice_summary(slice_element: ET.Element, *, index: int) -> dict[str, Any]:
     return {
         "slice_index": index,
@@ -335,8 +364,7 @@ def rename_screen_in_advanced_output(
     backup_dir: str | Path,
 ) -> dict[str, Any]:
     prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
-    screens_parent = prefs.root.find("./screens")
-    screen_elements = screens_parent.findall("./Screen") if screens_parent is not None else []
+    screen_elements = _screen_elements(prefs.root)
     if screen_index < 0 or screen_index >= len(screen_elements):
         raise IndexError("screen_index is out of range for AdvancedOutput.xml.")
     screen = screen_elements[screen_index]
@@ -369,12 +397,10 @@ def rename_slice_in_advanced_output(
     backup_dir: str | Path,
 ) -> dict[str, Any]:
     prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
-    screens_parent = prefs.root.find("./screens")
-    screen_elements = screens_parent.findall("./Screen") if screens_parent is not None else []
+    screen_elements = _screen_elements(prefs.root)
     if screen_index < 0 or screen_index >= len(screen_elements):
         raise IndexError("screen_index is out of range for AdvancedOutput.xml.")
-    slices_parent = screen_elements[screen_index].find("./layers")
-    slice_elements = slices_parent.findall("./Slice") if slices_parent is not None else []
+    slice_elements = _slice_elements(screen_elements[screen_index])
     if slice_index < 0 or slice_index >= len(slice_elements):
         raise IndexError("slice_index is out of range for the selected screen in AdvancedOutput.xml.")
     slice_element = slice_elements[slice_index]
@@ -420,6 +446,90 @@ def set_advanced_output_soft_edge_power(
         "new_value": value,
         "notes": [
             "Only the Soft Edge Power parameter was changed.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine.",
+        ],
+    }
+
+
+def set_advanced_output_screen_output_device(
+    *,
+    advanced_output_xml_path: str | Path,
+    screen_index: int,
+    name: str,
+    device_id: str,
+    width: int,
+    height: int,
+    backup_dir: str | Path,
+) -> dict[str, Any]:
+    prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
+    screen_elements = _screen_elements(prefs.root)
+    if screen_index < 0 or screen_index >= len(screen_elements):
+        raise IndexError("screen_index is out of range for AdvancedOutput.xml.")
+    screen = screen_elements[screen_index]
+    output_device = screen.find("./OutputDevice/*")
+    if output_device is None:
+        raise ValueError("Could not find OutputDevice in AdvancedOutput.xml.")
+    backup = backup_xml_file(advanced_output_xml_path, backup_dir)
+    old = {
+        "name": output_device.get("name"),
+        "device_id": output_device.get("deviceId"),
+        "width": _attr_int(output_device, "width"),
+        "height": _attr_int(output_device, "height"),
+    }
+    output_device.set("name", name)
+    output_device.set("deviceId", device_id)
+    output_device.set("width", str(width))
+    output_device.set("height", str(height))
+    prefs.save()
+    return {
+        "backup": backup,
+        "path": str(prefs.path),
+        "screen_index": screen_index,
+        "old_output_device": old,
+        "new_output_device": {
+            "name": name,
+            "device_id": device_id,
+            "width": width,
+            "height": height,
+        },
+        "notes": [
+            "Only the current screen output device attributes were changed.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine.",
+        ],
+    }
+
+
+def set_advanced_output_slice_vertices(
+    *,
+    advanced_output_xml_path: str | Path,
+    screen_index: int,
+    slice_index: int,
+    path: str,
+    vertices: list[dict[str, float]],
+    backup_dir: str | Path,
+) -> dict[str, Any]:
+    prefs = AdvancedOutputPreferences.load(advanced_output_xml_path)
+    screen_elements = _screen_elements(prefs.root)
+    if screen_index < 0 or screen_index >= len(screen_elements):
+        raise IndexError("screen_index is out of range for AdvancedOutput.xml.")
+    slice_elements = _slice_elements(screen_elements[screen_index])
+    if slice_index < 0 or slice_index >= len(slice_elements):
+        raise IndexError("slice_index is out of range for the selected screen in AdvancedOutput.xml.")
+    slice_element = slice_elements[slice_index]
+    old_vertices = _vertices(slice_element, path)
+    backup = backup_xml_file(advanced_output_xml_path, backup_dir)
+    _set_vertices(slice_element, path, vertices)
+    prefs.save()
+    return {
+        "backup": backup,
+        "path": str(prefs.path),
+        "screen_index": screen_index,
+        "slice_index": slice_index,
+        "target_path": path,
+        "old_vertices": old_vertices,
+        "new_vertices": vertices,
+        "notes": [
+            "Only the targeted vertex set was changed.",
             "Resolume reload behavior after XML replacement is not yet verified on this machine.",
         ],
     }

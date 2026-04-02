@@ -11,6 +11,8 @@ from resolume_mcp.advanced_output_xml import (
     rename_slice_in_advanced_output,
     restore_advanced_output_bundle,
     set_advanced_output_soft_edge_power,
+    set_advanced_output_screen_output_device,
+    set_advanced_output_slice_vertices,
     windows_advanced_output_path_candidates,
 )
 
@@ -223,3 +225,61 @@ def test_set_advanced_output_soft_edge_power(tmp_path: Path):
     )
     assert Path(payload["backup"]["backup"]).exists()
     assert 'value="3.5"' in advanced_output.read_text(encoding="utf-8")
+
+
+def test_set_advanced_output_screen_output_device(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+
+    payload = set_advanced_output_screen_output_device(
+        advanced_output_xml_path=advanced_output,
+        screen_index=0,
+        name="LED Wall",
+        device_id="\\\\.\\DISPLAY3",
+        width=3840,
+        height=1080,
+        backup_dir=tmp_path / "backups",
+    )
+    text = advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
+    assert 'name="LED Wall"' in text
+    assert 'width="3840"' in text
+
+
+def test_set_advanced_output_slice_vertices(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+
+    payload = set_advanced_output_slice_vertices(
+        advanced_output_xml_path=advanced_output,
+        screen_index=0,
+        slice_index=0,
+        path="./OutputRect",
+        vertices=[
+            {"x": 10.0, "y": 20.0},
+            {"x": 100.0, "y": 20.0},
+        ],
+        backup_dir=tmp_path / "backups",
+    )
+    text = advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
+    assert 'x="10.0" y="20.0"' in text
+
+
+def test_set_advanced_output_slice_vertices_rejects_wrong_count(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+
+    try:
+        set_advanced_output_slice_vertices(
+            advanced_output_xml_path=advanced_output,
+            screen_index=0,
+            slice_index=0,
+            path="./Warper/Homography/dst",
+            vertices=[{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}],
+            backup_dir=tmp_path / "backups",
+        )
+    except ValueError as exc:
+        assert "Vertex count mismatch" in str(exc)
+    else:
+        raise AssertionError("Expected a vertex count mismatch error.")

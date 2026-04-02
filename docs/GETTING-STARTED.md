@@ -126,6 +126,10 @@ Notes:
   - rename screen
   - rename slice
   - set soft-edge power
+  - set output device attributes
+  - set input rect vertices
+  - set output rect vertices
+  - set homography destination vertices
 - They are backup-first file edits, not proof of live reload behavior inside Resolume.
 - Deck helpers are live-verified for selection and scroll state; they do not currently assume hidden deck transport controls.
 

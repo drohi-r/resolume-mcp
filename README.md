@@ -33,6 +33,7 @@ Status:
   - preview restore
   - backup-first restore
   - guarded XML edits for screen name, slice name, and soft-edge power
+  - guarded XML edits for output device, input rect, output rect, and homography destination
 - deck access and deck-parameter helpers in place
 - deck snapshot and audit helpers are live-verified against the current deck schema
 - deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields

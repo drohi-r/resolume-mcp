@@ -1579,3 +1579,86 @@ def test_set_advanced_output_soft_edge_power_xml(tmp_path: Path):
         payload = json.loads(set_advanced_output_soft_edge_power_xml(4.25))
     assert 'value="4.25"' in advanced_output.read_text(encoding="utf-8")
     assert Path(payload["backup"]["backup"]).exists()
+
+
+def test_set_advanced_output_screen_output_device_xml(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import set_advanced_output_screen_output_device_xml
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+    ):
+        payload = json.loads(
+            set_advanced_output_screen_output_device_xml(
+                0,
+                "LED Wall",
+                "\\\\.\\DISPLAY3",
+                3840,
+                1080,
+            )
+        )
+    assert 'name="LED Wall"' in advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
+
+
+def test_set_advanced_output_slice_input_rect_xml(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import set_advanced_output_slice_input_rect_xml
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+    ):
+        payload = json.loads(
+            set_advanced_output_slice_input_rect_xml(
+                0,
+                0,
+                '[{"x":1,"y":2}]',
+            )
+        )
+    assert 'x="1" y="2"' in advanced_output.read_text(encoding="utf-8")
+    assert Path(payload["backup"]["backup"]).exists()
+
+
+def test_set_advanced_output_slice_homography_dst_xml_rejects_wrong_count(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import set_advanced_output_slice_homography_dst_xml
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+        ):
+            with pytest.raises(ValueError, match="Vertex count mismatch"):
+                set_advanced_output_slice_homography_dst_xml(
+                    0,
+                    0,
+                    '[{"x":1,"y":2},{"x":3,"y":4}]',
+                )
