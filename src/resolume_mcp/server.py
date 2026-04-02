@@ -1538,6 +1538,32 @@ async def insert_selected_clip(body_json: str) -> str:
 
 
 @mcp.tool()
+async def list_available_effects() -> str:
+    result = await _client().request("GET", "/effects")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def list_available_sources() -> str:
+    result = await _client().request("GET", "/sources")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_product_info() -> str:
+    result = await _client().request("GET", "/product")
+    return _json_response(result)
+
+
+@mcp.tool()
+async def get_file_info(body_json: str) -> str:
+    body = _parse_json_list(body_json, field_name="body_json")
+    normalized = [_normalize_media_uri(item) for item in body]
+    result = await _client().request("POST", "/files", body=normalized)
+    return _json_response(result)
+
+
+@mcp.tool()
 async def update_clip_thumbnail(layer_index: int, clip_index: int, body_json: str = "") -> str:
     body = _optional_json_object(body_json, field_name="body_json")
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/thumbnail/update", body=body)
@@ -2740,6 +2766,7 @@ async def reset_deck_parameter(deck_index: int, parameter_suffix: str) -> str:
 async def add_effect(
     scope: str,
     effect_kind: str,
+    effect_spec: str,
     *,
     effect_index: int | None = None,
     layer_index: int | None = None,
@@ -2751,7 +2778,27 @@ async def add_effect(
     path = f"{base}/effects/{kind}/add"
     if effect_index is not None:
         path = f"{path}/{effect_index}"
-    result = await _client().request("POST", path)
+    effect_spec = effect_spec.strip()
+    if not effect_spec:
+        raise ValueError("effect_spec is required and must be a non-empty effect URI like effect:///video/Blow.")
+    result = await _client().request("POST", path, body=effect_spec)
+    return _json_response(result)
+
+
+@mcp.tool()
+async def remove_effect(
+    scope: str,
+    effect_kind: str,
+    effect_index: int,
+    *,
+    layer_index: int | None = None,
+    group_index: int | None = None,
+    clip_index: int | None = None,
+) -> str:
+    base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
+    kind = _effect_kind_path(effect_kind)
+    path = f"{base}/effects/{kind}/{effect_index}"
+    result = await _client().request("DELETE", path)
     return _json_response(result)
 
 

@@ -1812,8 +1812,73 @@ async def test_add_effect_for_selected_layer(mock_client_factory):
     fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/selected/effects/video/add/4"})
     mock_client_factory.return_value = fake
 
-    payload = json.loads(await add_effect("selected-layer", "video", effect_index=4))
+    payload = json.loads(await add_effect("selected-layer", "video", "effect:///video/Blow", effect_index=4))
     assert payload["path"] == "/api/v1/composition/layers/selected/effects/video/add/4"
+    fake.request.assert_awaited_once_with(
+        "POST",
+        "/composition/layers/selected/effects/video/add/4",
+        body="effect:///video/Blow",
+    )
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_list_available_effects(mock_client_factory):
+    from resolume_mcp.server import list_available_effects
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/effects"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await list_available_effects())
+    assert payload["path"] == "/api/v1/effects"
+    fake.request.assert_awaited_once_with("GET", "/effects")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_list_available_sources(mock_client_factory):
+    from resolume_mcp.server import list_available_sources
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/sources"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await list_available_sources())
+    assert payload["path"] == "/api/v1/sources"
+    fake.request.assert_awaited_once_with("GET", "/sources")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_get_product_info(mock_client_factory):
+    from resolume_mcp.server import get_product_info
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/product"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await get_product_info())
+    assert payload["path"] == "/api/v1/product"
+    fake.request.assert_awaited_once_with("GET", "/product")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_get_file_info_normalizes_urls(mock_client_factory):
+    from resolume_mcp.server import get_file_info
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/files"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await get_file_info('["C:/media/loop.mov", "file:///Users/test/video.mp4"]'))
+    assert payload["path"] == "/api/v1/files"
+    fake.request.assert_awaited_once_with(
+        "POST",
+        "/files",
+        body=["file:///C:/media/loop.mov", "file:///Users/test/video.mp4"],
+    )
 
 
 @pytest.mark.asyncio
@@ -1840,6 +1905,34 @@ async def test_get_clip_effect(mock_client_factory):
     assert payload["path"] == "/api/v1/composition/layers/1/clips/3/effects/audio/2"
     assert payload["fallback_used"] is True
     assert payload["body"]["display_name"] == "Big Verb"
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_remove_effect_from_composition(mock_client_factory):
+    from resolume_mcp.server import remove_effect
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/effects/video/1"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await remove_effect("composition", "video", 1))
+    assert payload["path"] == "/api/v1/composition/effects/video/1"
+    fake.request.assert_awaited_once_with("DELETE", "/composition/effects/video/1")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_remove_effect_from_clip_uses_clip_id(mock_client_factory):
+    from resolume_mcp.server import remove_effect
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True, "path": "/api/v1/composition/layers/1/clips/2/effects/video/1"})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await remove_effect("clip", "video", 1, layer_index=1, clip_index=2))
+    assert payload["path"] == "/api/v1/composition/layers/1/clips/2/effects/video/1"
+    fake.request.assert_awaited_once_with("DELETE", "/composition/layers/1/clips/2/effects/video/1")
 
 
 @pytest.mark.asyncio
@@ -1961,4 +2054,12 @@ async def test_add_effect_rejects_bad_kind():
     from resolume_mcp.server import add_effect
 
     with pytest.raises(ValueError, match="effect_kind must be 'audio' or 'video'"):
-        await add_effect("composition", "shader")
+        await add_effect("composition", "shader", "effect:///video/Blow")
+
+
+@pytest.mark.asyncio
+async def test_add_effect_requires_spec():
+    from resolume_mcp.server import add_effect
+
+    with pytest.raises(ValueError, match="effect_spec is required"):
+        await add_effect("composition", "video", "   ")

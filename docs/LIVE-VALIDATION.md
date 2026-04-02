@@ -96,6 +96,10 @@ Scope note:
 - On an empty target slot (`layer 1 / clip 2`) on this machine:
   - `insert_clip` works when the body is an array of `file://` URIs
   - bare filesystem paths and non-array insert payloads failed with `400`
-  - `open` / `openfile` attempts still returned `400` for the tested payload shapes
+  - `open` works when the request body is sent as raw `text/plain` containing a single `file:///...` or `source:///...` URL
+  - the previous `open` failures were caused by sending quoted JSON strings instead of raw `text/plain`
+  - `openfile` shares the same documented `text/plain` contract, but was not revalidated after the client transport fix because `open` is the preferred non-deprecated path
   - `clear_clip` did not actually clear the inserted media even though the request returned `204`
-  - `effects/video/add` returned `400` on the temporary inserted slot
+  - `effects/video/add/{offset}` works when the request body is sent as raw `text/plain` with an effect URI such as `effect:///video/Blow`
+  - `effects/video/{offset}` delete works on the same slot after the add test
+  - `GET /effects`, `GET /sources`, and `POST /files` all work and are now wrapped by named tools

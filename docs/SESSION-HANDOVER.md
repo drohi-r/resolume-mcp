@@ -8,8 +8,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 
 - Repo path: `/Users/Drohi/Projects/resolume-mcp`
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `128 passed`
-- Validation status: `130 passed`
+- Validation status: `141 passed`
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
 - Intended deployment environment: Windows media servers
@@ -21,9 +20,12 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - `set_clip_speed` and `set_clip_transport_position` are live-proven on a loaded media clip, with the normal caveat that position keeps advancing while playback runs
   - `disconnect_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip remains connected
   - `insert_clip` is live-proven when given an array of `file://` URIs
-  - `open` / `openfile` media-loading helpers are still unresolved on this build for the payload shapes tested so far
+  - `open` is now live-proven when the request body is sent as raw `text/plain` with a single `file:///...` URL
+  - `openfile` shares the same documented `text/plain` contract but remains un-rechecked after the transport fix because the endpoint is deprecated upstream
   - `clear_clip` is not truly supported by the currently exposed live behavior on this build; the request succeeds but the clip retains its media
-  - `effects/video/add` on a temporary inserted slot returned `400` during live validation
+  - `effects/video/add/{offset}` is now live-proven on a temporary inserted slot when sent as raw `text/plain effect:///...`
+  - clip-effect delete by grid position is also live-proven on the same slot
+  - product, effects, sources, and file-info discovery endpoints are live-proven and now wrapped by named tools
   - Advanced Output HTTP paths currently return `404`
   - Advanced Output is persisted locally as XML in `~/Documents/Resolume Arena/Preferences`
   - those XML path findings are macOS-specific and should be reconfigured or revalidated on Windows hosts
@@ -42,6 +44,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - layer snapshot and audit
   - clip snapshot and audit
   - source/media helpers for clip open, openfile, insert, and thumbnail refresh
+  - product/effects/sources/files discovery helpers
   - batch layer/column/clip selection helpers
   - selected layer and selected clip readers
   - BPM control
@@ -58,6 +61,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
   - group add-layer, move-layer, and clear helpers
   - generic effect wrappers for composition, layer, group, and clip scopes:
     - add
+    - remove
     - get
     - video move
     - display-name rename

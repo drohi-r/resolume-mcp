@@ -56,9 +56,15 @@ class ResolumeClient:
     ) -> dict[str, Any]:
         normalized = normalize_api_path(path)
         url = join_url(self.config.http_base_url, normalized)
+        request_kwargs: dict[str, Any] = {"params": params}
+        if isinstance(body, str):
+            request_kwargs["content"] = body
+            request_kwargs["headers"] = {"content-type": "text/plain"}
+        else:
+            request_kwargs["json"] = body
 
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            response = await client.request(method.upper(), url, json=body, params=params)
+            response = await client.request(method.upper(), url, **request_kwargs)
 
         parsed: Any
         content_type = response.headers.get("content-type", "")
