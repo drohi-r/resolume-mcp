@@ -23,6 +23,17 @@ Environment variables:
   - default: `7000`
 - `RESOLUME_USE_HTTPS`
   - default: `0`
+- `RESOLUME_DOCUMENTS_ROOT`
+  - default on the current macOS validation machine: `~/Documents/Resolume Arena`
+- `RESOLUME_ADVANCED_OUTPUT_XML`
+  - default on the current macOS validation machine: `~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml`
+- `RESOLUME_SLICES_XML`
+  - default on the current macOS validation machine: `~/Documents/Resolume Arena/Preferences/slices.xml`
+
+Important:
+
+- The current repo defaults for XML-backed Advanced Output paths are based on the macOS validation machine.
+- For Windows media servers, set the XML path environment variables explicitly so the repo points at the correct Resolume documents/preferences locations on that host.
 
 ## Local setup
 
@@ -106,6 +117,7 @@ Notes:
 - On the validated local Resolume 7 build used for this repo, `set_composition_playing` is treated as build-dependent because composition transport was not exposed in the REST payload.
 - On that same build, Advanced Output HTTP endpoints returned `404`, so output helpers should be treated as experimental until your target machine exposes them.
 - On that same build, Advanced Output is persisted to XML under `~/Documents/Resolume Arena/Preferences`, and the repo now has read-only XML tools for that surface.
+- The above XML path finding was validated on macOS only. Windows deployment paths should be treated as host-specific configuration, not assumed to match the macOS defaults.
 - Deck helpers are live-verified for selection and scroll state; they do not currently assume hidden deck transport controls.
 
 ## Design note

@@ -13,6 +13,7 @@ Planned focus:
 Status:
 - generic REST / WebSocket / OSC foundation in place
 - live validation completed against the local Resolume instance on this machine
+- current live validation was performed on macOS, but the intended production targets are Windows media servers
 - composition, layer, clip, and deck helpers now resolve live websocket parameters through `/parameter/by-id/{id}` where the local REST schema exposes them
 - Advanced Output XML inspection, backup, and diff tools are now in place for local Resolume installations that persist output setup to XML
 - clip audit, batch clip trigger/disconnect, and batch layer clear helpers in place
@@ -26,6 +27,9 @@ Status:
   - slice inspection
   - backup
   - diff
+  - export bundle
+  - preview restore
+  - backup-first restore
 - deck access and deck-parameter helpers in place
 - deck snapshot and audit helpers are live-verified against the current deck schema
 - deck prep and transport-style deck helpers are intentionally conservative because the validated deck schema does not expose deck transport fields

@@ -162,6 +162,42 @@ def backup_xml_file(source_path: str | Path, backup_dir: str | Path) -> dict[str
     }
 
 
+def export_xml_file(source_path: str | Path, export_dir: str | Path, *, export_name: str | None = None) -> dict[str, Any]:
+    source = Path(source_path).expanduser()
+    target_dir = Path(export_dir).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    destination_name = export_name or source.name
+    destination = target_dir / destination_name
+    shutil.copy2(source, destination)
+    return {
+        "source": str(source),
+        "export": str(destination),
+    }
+
+
+def export_advanced_output_bundle(
+    *,
+    advanced_output_xml_path: str | Path,
+    slices_xml_path: str | Path,
+    export_dir: str | Path,
+) -> dict[str, Any]:
+    target_dir = Path(export_dir).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "bundle_dir": str(target_dir),
+        "advanced_output_xml": export_xml_file(
+            advanced_output_xml_path,
+            target_dir,
+            export_name="AdvancedOutput.xml",
+        ),
+        "slices_xml": export_xml_file(
+            slices_xml_path,
+            target_dir,
+            export_name="slices.xml",
+        ),
+    }
+
+
 def diff_xml_text(current_text: str, other_text: str, *, current_name: str, other_name: str) -> list[str]:
     return list(
         difflib.unified_diff(
@@ -172,3 +208,88 @@ def diff_xml_text(current_text: str, other_text: str, *, current_name: str, othe
             lineterm="",
         )
     )
+
+
+def preview_restore_advanced_output_bundle(
+    *,
+    current_advanced_output_xml_path: str | Path,
+    current_slices_xml_path: str | Path,
+    candidate_advanced_output_xml_path: str | Path,
+    candidate_slices_xml_path: str | Path,
+) -> dict[str, Any]:
+    current_advanced_output = AdvancedOutputPreferences.load(current_advanced_output_xml_path)
+    candidate_advanced_output = AdvancedOutputPreferences.load(candidate_advanced_output_xml_path)
+    current_slices = SliceInspectorPreferences.load(current_slices_xml_path)
+    candidate_slices = SliceInspectorPreferences.load(candidate_slices_xml_path)
+
+    advanced_output_diff = diff_xml_text(
+        current_advanced_output.raw_xml,
+        candidate_advanced_output.raw_xml,
+        current_name=str(current_advanced_output.path),
+        other_name=str(Path(candidate_advanced_output_xml_path).expanduser()),
+    )
+    slices_diff = diff_xml_text(
+        current_slices.raw_xml,
+        candidate_slices.raw_xml,
+        current_name=str(current_slices.path),
+        other_name=str(Path(candidate_slices_xml_path).expanduser()),
+    )
+
+    return {
+        "current": {
+            "advanced_output_xml": current_advanced_output.summary(),
+            "slices_xml": current_slices.summary(),
+        },
+        "candidate": {
+            "advanced_output_xml": candidate_advanced_output.summary(),
+            "slices_xml": candidate_slices.summary(),
+        },
+        "diffs": {
+            "advanced_output_xml": {
+                "diff_line_count": len(advanced_output_diff),
+                "diff": advanced_output_diff,
+            },
+            "slices_xml": {
+                "diff_line_count": len(slices_diff),
+                "diff": slices_diff,
+            },
+        },
+        "notes": [
+            "This is a file-level preview only.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine.",
+        ],
+    }
+
+
+def restore_advanced_output_bundle(
+    *,
+    current_advanced_output_xml_path: str | Path,
+    current_slices_xml_path: str | Path,
+    source_advanced_output_xml_path: str | Path,
+    source_slices_xml_path: str | Path,
+    backup_dir: str | Path,
+) -> dict[str, Any]:
+    backups = {
+        "advanced_output_xml": backup_xml_file(current_advanced_output_xml_path, backup_dir),
+        "slices_xml": backup_xml_file(current_slices_xml_path, backup_dir),
+    }
+    restores = {
+        "advanced_output_xml": export_xml_file(
+            source_advanced_output_xml_path,
+            Path(current_advanced_output_xml_path).expanduser().parent,
+            export_name=Path(current_advanced_output_xml_path).expanduser().name,
+        ),
+        "slices_xml": export_xml_file(
+            source_slices_xml_path,
+            Path(current_slices_xml_path).expanduser().parent,
+            export_name=Path(current_slices_xml_path).expanduser().name,
+        ),
+    }
+    return {
+        "backups": backups,
+        "restores": restores,
+        "notes": [
+            "Current files were backed up before restore.",
+            "Resolume reload behavior after XML replacement is not yet verified on this machine. Manual reopen, preset import, or app restart may be required.",
+        ],
+    }

@@ -8,12 +8,15 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 
 - Repo path: `/Users/Drohi/Projects/resolume-mcp`
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `83 passed`
+- Validation status: `100 passed`
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
+- Validation environment: macOS laptop
+- Intended deployment environment: Windows media servers
 - Live API reality on this machine:
   - composition, layer, clip, and deck parameter helpers are now aligned to `/parameter/by-id/{id}`
   - Advanced Output HTTP paths currently return `404`
   - Advanced Output is persisted locally as XML in `~/Documents/Resolume Arena/Preferences`
+  - those XML path findings are macOS-specific and should be reconfigured or revalidated on Windows hosts
 
 ## Current capability shape
 
@@ -67,6 +70,9 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
     - slice inspection
     - backup
     - diff
+    - export bundle
+    - preview restore
+    - backup-first restore
 
 ## Local skills currently present
 

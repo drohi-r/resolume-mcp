@@ -1407,3 +1407,80 @@ def test_diff_advanced_output_preferences(tmp_path: Path):
         payload = json.loads(diff_advanced_output_preferences(str(other)))
     assert payload["diff_line_count"] > 0
     assert any("Slice B" in line for line in payload["diff"])
+
+
+def test_export_advanced_output_preferences(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import export_advanced_output_preferences
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+        ),
+    ):
+        payload = json.loads(export_advanced_output_preferences(str(tmp_path / "exports"), "bundle-a"))
+    assert Path(payload["advanced_output_xml"]["export"]).exists()
+    assert "notes" in payload
+
+
+def test_preview_restore_advanced_output_preferences(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import preview_restore_advanced_output_preferences
+
+    current_advanced_output = tmp_path / "AdvancedOutput.xml"
+    current_slices = tmp_path / "slices.xml"
+    source_dir = tmp_path / "bundle"
+    source_dir.mkdir()
+    source_advanced_output = source_dir / "AdvancedOutput.xml"
+    source_slices = source_dir / "slices.xml"
+    current_advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    current_slices.write_text(SLICES_XML, encoding="utf-8")
+    source_advanced_output.write_text(ADVANCED_OUTPUT_XML.replace("Slice A", "Slice C"), encoding="utf-8")
+    source_slices.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(current_advanced_output),
+            slices_xml_path=str(current_slices),
+        ),
+    ):
+        payload = json.loads(preview_restore_advanced_output_preferences(str(source_advanced_output)))
+    assert payload["diffs"]["advanced_output_xml"]["diff_line_count"] > 0
+
+
+def test_restore_advanced_output_preferences(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import restore_advanced_output_preferences
+
+    current_advanced_output = tmp_path / "AdvancedOutput.xml"
+    current_slices = tmp_path / "slices.xml"
+    source_dir = tmp_path / "bundle"
+    source_dir.mkdir()
+    source_advanced_output = source_dir / "AdvancedOutput.xml"
+    source_slices = source_dir / "slices.xml"
+    current_advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    current_slices.write_text(SLICES_XML, encoding="utf-8")
+    source_advanced_output.write_text(ADVANCED_OUTPUT_XML.replace("Slice A", "Slice Restored"), encoding="utf-8")
+    source_slices.write_text(SLICES_XML, encoding="utf-8")
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(current_advanced_output),
+            slices_xml_path=str(current_slices),
+        ),
+    ):
+        payload = json.loads(restore_advanced_output_preferences(str(source_advanced_output), backup_dir=str(tmp_path / "backups")))
+    assert Path(payload["backups"]["advanced_output_xml"]["backup"]).exists()
+    assert "Slice Restored" in current_advanced_output.read_text(encoding="utf-8")

@@ -4,6 +4,11 @@
 
 These notes come from validating the repo against the local Resolume instance running on this laptop on `2026-04-02`.
 
+Scope note:
+
+- This validation was performed on a macOS machine.
+- Your intended production targets are Windows media servers, so filesystem-backed findings in this document should be treated as macOS-specific unless revalidated on Windows.
+
 ## Confirmed
 
 - REST webserver reachable on `http://127.0.0.1:8080`
@@ -50,6 +55,7 @@ These notes come from validating the repo against the local Resolume instance ru
 - Advanced Output is persisted locally on this machine as XML:
   - `/Users/Drohi/Documents/Resolume Arena/Preferences/AdvancedOutput.xml`
   - `/Users/Drohi/Documents/Resolume Arena/Preferences/slices.xml`
+- Those exact filesystem paths are macOS-local findings, not assumed Windows defaults.
 - The repo now has read-only XML tools for:
   - summary
   - screen inspection

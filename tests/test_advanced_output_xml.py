@@ -5,6 +5,9 @@ from resolume_mcp.advanced_output_xml import (
     SliceInspectorPreferences,
     backup_xml_file,
     diff_xml_text,
+    export_advanced_output_bundle,
+    preview_restore_advanced_output_bundle,
+    restore_advanced_output_bundle,
 )
 
 
@@ -112,3 +115,59 @@ def test_diff_xml_text_reports_changes():
     )
     assert diff[0] == "--- current.xml"
     assert any(line.startswith("+<root><a>2</a></root>") for line in diff)
+
+
+def test_export_advanced_output_bundle(tmp_path: Path):
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+
+    payload = export_advanced_output_bundle(
+        advanced_output_xml_path=advanced_output,
+        slices_xml_path=slices_xml,
+        export_dir=tmp_path / "exports",
+    )
+    assert Path(payload["advanced_output_xml"]["export"]).exists()
+    assert Path(payload["slices_xml"]["export"]).exists()
+
+
+def test_preview_restore_advanced_output_bundle(tmp_path: Path):
+    current_advanced_output = tmp_path / "CurrentAdvancedOutput.xml"
+    current_slices = tmp_path / "CurrentSlices.xml"
+    candidate_advanced_output = tmp_path / "CandidateAdvancedOutput.xml"
+    candidate_slices = tmp_path / "CandidateSlices.xml"
+    current_advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    current_slices.write_text(SLICES_XML, encoding="utf-8")
+    candidate_advanced_output.write_text(ADVANCED_OUTPUT_XML.replace("Slice A", "Slice B"), encoding="utf-8")
+    candidate_slices.write_text(SLICES_XML.replace("<Items/>", "<Items><Item/></Items>"), encoding="utf-8")
+
+    payload = preview_restore_advanced_output_bundle(
+        current_advanced_output_xml_path=current_advanced_output,
+        current_slices_xml_path=current_slices,
+        candidate_advanced_output_xml_path=candidate_advanced_output,
+        candidate_slices_xml_path=candidate_slices,
+    )
+    assert payload["diffs"]["advanced_output_xml"]["diff_line_count"] > 0
+    assert payload["diffs"]["slices_xml"]["diff_line_count"] > 0
+
+
+def test_restore_advanced_output_bundle(tmp_path: Path):
+    current_advanced_output = tmp_path / "AdvancedOutput.xml"
+    current_slices = tmp_path / "slices.xml"
+    source_advanced_output = tmp_path / "SourceAdvancedOutput.xml"
+    source_slices = tmp_path / "SourceSlices.xml"
+    current_advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    current_slices.write_text(SLICES_XML, encoding="utf-8")
+    source_advanced_output.write_text(ADVANCED_OUTPUT_XML.replace("Slice A", "Slice Restored"), encoding="utf-8")
+    source_slices.write_text(SLICES_XML.replace("<Items/>", "<Items><Item/></Items>"), encoding="utf-8")
+
+    payload = restore_advanced_output_bundle(
+        current_advanced_output_xml_path=current_advanced_output,
+        current_slices_xml_path=current_slices,
+        source_advanced_output_xml_path=source_advanced_output,
+        source_slices_xml_path=source_slices,
+        backup_dir=tmp_path / "backups",
+    )
+    assert Path(payload["backups"]["advanced_output_xml"]["backup"]).exists()
+    assert "Slice Restored" in current_advanced_output.read_text(encoding="utf-8")

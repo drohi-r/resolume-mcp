@@ -11,6 +11,9 @@ from .advanced_output_xml import (
     SliceInspectorPreferences,
     backup_xml_file,
     diff_xml_text,
+    export_advanced_output_bundle,
+    preview_restore_advanced_output_bundle,
+    restore_advanced_output_bundle,
 )
 from .client import ResolumeClient
 from .config import load_config
@@ -434,6 +437,58 @@ def backup_advanced_output_preferences(backup_dir: str = "") -> str:
             "slices_xml": slices_backup,
         }
     )
+
+
+@mcp.tool()
+def export_advanced_output_preferences(export_dir: str = "", bundle_name: str = "") -> str:
+    config = load_config()
+    target_dir = Path(export_dir.strip() or Path(config.documents_root) / "Exports" / "AdvancedOutput").expanduser()
+    if bundle_name.strip():
+        target_dir = target_dir / bundle_name.strip()
+    payload = export_advanced_output_bundle(
+        advanced_output_xml_path=config.advanced_output_xml_path,
+        slices_xml_path=config.slices_xml_path,
+        export_dir=target_dir,
+    )
+    payload["notes"] = [
+        "This exports the current Advanced Output XML bundle without changing the live files."
+    ]
+    return _json_response(payload)
+
+
+@mcp.tool()
+def preview_restore_advanced_output_preferences(
+    source_advanced_output_xml_path: str,
+    source_slices_xml_path: str = "",
+) -> str:
+    config = load_config()
+    candidate_slices_path = source_slices_xml_path.strip() or str(Path(source_advanced_output_xml_path).expanduser().with_name("slices.xml"))
+    payload = preview_restore_advanced_output_bundle(
+        current_advanced_output_xml_path=config.advanced_output_xml_path,
+        current_slices_xml_path=config.slices_xml_path,
+        candidate_advanced_output_xml_path=source_advanced_output_xml_path,
+        candidate_slices_xml_path=candidate_slices_path,
+    )
+    return _json_response(payload)
+
+
+@mcp.tool()
+def restore_advanced_output_preferences(
+    source_advanced_output_xml_path: str,
+    source_slices_xml_path: str = "",
+    backup_dir: str = "",
+) -> str:
+    config = load_config()
+    candidate_slices_path = source_slices_xml_path.strip() or str(Path(source_advanced_output_xml_path).expanduser().with_name("slices.xml"))
+    target_backup_dir = backup_dir.strip() or str(Path(config.documents_root) / "Backups" / "AdvancedOutput")
+    payload = restore_advanced_output_bundle(
+        current_advanced_output_xml_path=config.advanced_output_xml_path,
+        current_slices_xml_path=config.slices_xml_path,
+        source_advanced_output_xml_path=source_advanced_output_xml_path,
+        source_slices_xml_path=candidate_slices_path,
+        backup_dir=target_backup_dir,
+    )
+    return _json_response(payload)
 
 
 @mcp.tool()
