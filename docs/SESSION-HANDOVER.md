@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This file is the current internal handoff snapshot for the private `resolume-mcp` repo.
+This file is the current internal handoff snapshot for the public `resolume-mcp` repo.
 
 ## Current state
 
