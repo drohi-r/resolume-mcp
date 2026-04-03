@@ -12,7 +12,7 @@
 
 An MCP server for [Resolume Arena and Avenue](https://resolume.com). Exposes 206 tools covering composition control, playback, Advanced Output management, and show recovery — so AI assistants can operate Resolume via REST, WebSocket, and OSC.
 
-Built for live production. Every destructive operation requires explicit confirmation. Read operations are always safe.
+Built for live production. Pairs with [grandMA2 MCP](https://github.com/drohi-r/grandma2-mcp), [MADRIX MCP](https://github.com/drohi-r/madrix-mcp), [Companion MCP](https://github.com/drohi-r/companion-mcp), and [Beyond MCP](https://github.com/drohi-r/beyond-mcp) for full AI-driven show control.
 
 ## What it does
 
@@ -56,6 +56,30 @@ The server reads configuration from environment variables. All have sensible def
 | `RESOLUME_DOCUMENTS_ROOT` | `~/Documents/Resolume Arena` | Resolume documents path |
 | `RESOLUME_ADVANCED_OUTPUT_XML` | `~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml` | Advanced Output XML path |
 | `RESOLUME_SLICES_XML` | `~/Documents/Resolume Arena/Preferences/slices.xml` | Slices XML path |
+
+## Architecture
+
+```mermaid
+graph TD
+    A["Resolume MCP Server<br/><code>resolume_mcp</code><br/>206 tools · safety gate"] --> B
+    A --> C
+    A --> D
+    B["REST Client<br/>Composition · clips · layers · effects"] --> E
+    C["WebSocket Client<br/>Parameter subscriptions · state polling"] --> E
+    D["OSC Client<br/>Transport control"] --> E
+    E["Resolume Arena / Avenue<br/>HTTP API on port 8080"]
+
+    F["Advanced Output Engine<br/>XML inspection · atomic writes · backup"] -.-> A
+    G["Safety Gate<br/>16 destructive ops gated behind confirm"] -.-> A
+
+    style A fill:#1a1a2e,stroke:#9B59FF,color:#fff
+    style B fill:#1a1a2e,stroke:#9B59FF,color:#fff
+    style C fill:#1a1a2e,stroke:#9B59FF,color:#fff
+    style D fill:#1a1a2e,stroke:#9B59FF,color:#fff
+    style E fill:#1a1a2e,stroke:#0f3460,color:#fff
+    style F fill:#0f3460,stroke:#0f3460,color:#fff
+    style G fill:#0f3460,stroke:#0f3460,color:#fff
+```
 
 ## Claude Desktop
 
