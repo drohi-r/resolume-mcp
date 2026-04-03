@@ -29,10 +29,10 @@ Built for live production. Every destructive operation requires explicit confirm
 ```bash
 # Clone and install
 git clone https://github.com/drohi-r/resolume-mcp && cd resolume-mcp
-pip install -e ".[dev]"
+uv sync
 
 # Run the server (connects to Resolume on localhost:8080)
-python -m resolume_mcp
+uv run python -m resolume_mcp
 ```
 
 Make sure Resolume Arena or Avenue is running with the REST API enabled (Preferences → OSC/HTTP → HTTP API).
@@ -65,8 +65,8 @@ Add this to your Claude Desktop config (`~/Library/Application Support/Claude/cl
 {
   "mcpServers": {
     "resolume": {
-      "command": "python",
-      "args": ["-m", "resolume_mcp"],
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/resolume-mcp", "python", "-m", "resolume_mcp"],
       "env": {
         "RESOLUME_HOST": "127.0.0.1",
         "RESOLUME_HTTP_PORT": "8080",
@@ -85,8 +85,8 @@ Add to `.vscode/mcp.json` in your project:
 {
   "servers": {
     "resolume": {
-      "command": "python",
-      "args": ["-m", "resolume_mcp"],
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/resolume-mcp", "python", "-m", "resolume_mcp"],
       "env": {
         "RESOLUME_HOST": "127.0.0.1",
         "RESOLUME_HTTP_PORT": "8080",
@@ -122,11 +122,11 @@ The server includes 7 operator skills — structured workflows for common live-s
 ## Development
 
 ```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
+# Install and sync dependencies
+uv sync
 
 # Run tests
-pytest -v
+uv run python -m pytest -v
 ```
 
 ## License
