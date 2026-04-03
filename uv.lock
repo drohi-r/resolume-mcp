@@ -534,9 +534,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx" },
-    { name = "mcp" },
-    { name = "websockets" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "mcp", specifier = ">=1.0" },
+    { name = "websockets", specifier = ">=16.0" },
 ]
 
 [package.metadata.requires-dev]
