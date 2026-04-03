@@ -6,7 +6,7 @@ This file is the current internal handoff snapshot for the private `resolume-mcp
 
 ## Current state
 
-- Repo path: `/Users/Drohi/Projects/resolume-mcp`
+- Repo path: `~/Projects/resolume-mcp`
 - Project type: private MCP server for Resolume Arena/Avenue
 - Validation status: `149 passed`
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`

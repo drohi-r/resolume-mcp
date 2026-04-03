@@ -69,8 +69,8 @@ Scope note:
 - Advanced Output endpoints were not present in the exposed REST spec on the validated local build.
 - The current repo's Advanced Output wrappers therefore remain experimental until verified against a build that exposes those surfaces, or against a different control method.
 - Advanced Output is persisted locally on this machine as XML:
-  - `/Users/Drohi/Documents/Resolume Arena/Preferences/AdvancedOutput.xml`
-  - `/Users/Drohi/Documents/Resolume Arena/Preferences/slices.xml`
+  - `~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml`
+  - `~/Documents/Resolume Arena/Preferences/slices.xml`
 - Those exact filesystem paths are macOS-local findings, not assumed Windows defaults.
 - The repo now has read-only XML tools for:
   - summary
