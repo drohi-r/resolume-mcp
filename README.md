@@ -37,6 +37,11 @@ python -m resolume_mcp
 
 Make sure Resolume Arena or Avenue is running with the REST API enabled (Preferences → OSC/HTTP → HTTP API).
 
+For remote control:
+- use LAN or WireGuard, not the public internet
+- set `RESOLUME_HOST` to the remote machine
+- include that host in `RESOLUME_ALLOWED_HOSTS`
+
 ## Configuration
 
 The server reads configuration from environment variables. All have sensible defaults for local development.
@@ -46,6 +51,7 @@ The server reads configuration from environment variables. All have sensible def
 | `RESOLUME_HOST` | `127.0.0.1` | Resolume instance IP |
 | `RESOLUME_HTTP_PORT` | `8080` | HTTP API port |
 | `RESOLUME_OSC_PORT` | `7000` | OSC listener port |
+| `RESOLUME_ALLOWED_HOSTS` | `127.0.0.1,localhost,::1` | Comma-separated allowlist for target hosts. Set `*` to allow any. |
 | `RESOLUME_USE_HTTPS` | `false` | Use HTTPS for API calls (`true`, `yes`, `1`) |
 | `RESOLUME_DOCUMENTS_ROOT` | `~/Documents/Resolume Arena` | Resolume documents path |
 | `RESOLUME_ADVANCED_OUTPUT_XML` | `~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml` | Advanced Output XML path |
@@ -63,7 +69,8 @@ Add this to your Claude Desktop config (`~/Library/Application Support/Claude/cl
       "args": ["-m", "resolume_mcp"],
       "env": {
         "RESOLUME_HOST": "127.0.0.1",
-        "RESOLUME_HTTP_PORT": "8080"
+        "RESOLUME_HTTP_PORT": "8080",
+        "RESOLUME_ALLOWED_HOSTS": "127.0.0.1,localhost,::1"
       }
     }
   }
@@ -82,7 +89,8 @@ Add to `.vscode/mcp.json` in your project:
       "args": ["-m", "resolume_mcp"],
       "env": {
         "RESOLUME_HOST": "127.0.0.1",
-        "RESOLUME_HTTP_PORT": "8080"
+        "RESOLUME_HTTP_PORT": "8080",
+        "RESOLUME_ALLOWED_HOSTS": "127.0.0.1,localhost,::1"
       }
     }
   }
@@ -107,6 +115,7 @@ The server includes 7 operator skills — structured workflows for common live-s
 
 - **Read operations** (snapshots, audits, parameter gets): always safe, no confirmation needed
 - **Destructive operations** (clear, disconnect, remove): require `confirm_destructive=True`
+- **Host allowlisting**: only `127.0.0.1`, `localhost`, and `::1` are permitted by default. Add LAN hosts explicitly via `RESOLUME_ALLOWED_HOSTS`. Set `*` to allow any host.
 - **Advanced Output XML writes**: atomic (temp file + rename) to prevent corruption
 - **Polling loops**: crash-resilient — return last known state if Resolume becomes unreachable
 
