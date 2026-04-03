@@ -121,6 +121,32 @@ Add to `.vscode/mcp.json` in your project:
 }
 ```
 
+## Codex
+
+Create a `codex.json` MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "resolume": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/resolume-mcp", "python", "-m", "resolume_mcp"],
+      "env": {
+        "RESOLUME_HOST": "127.0.0.1",
+        "RESOLUME_HTTP_PORT": "8080",
+        "RESOLUME_ALLOWED_HOSTS": "127.0.0.1,localhost,::1"
+      }
+    }
+  }
+}
+```
+
+Then run Codex with:
+
+```bash
+codex --mcp-config codex.json
+```
+
 ## Skills
 
 The server includes 7 operator skills — structured workflows for common live-show scenarios:
