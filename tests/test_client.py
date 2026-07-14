@@ -58,6 +58,38 @@ async def test_drain_websocket_bootstrap_stops_on_timeout():
 
 
 @pytest.mark.asyncio
+async def test_websocket_action_allows_arena_bootstrap_frames_larger_than_one_megabyte():
+    class FakeWebSocket:
+        async def send(self, _payload):
+            return None
+
+        async def recv(self):
+            return '{"ok":true}'
+
+    class FakeConnection:
+        def __init__(self):
+            self.websocket = FakeWebSocket()
+            self.kwargs = None
+
+        def __call__(self, _url, **kwargs):
+            self.kwargs = kwargs
+            return self
+
+        async def __aenter__(self):
+            return self.websocket
+
+        async def __aexit__(self, *_args):
+            return False
+
+    connection = FakeConnection()
+    client = ResolumeClient(ResolumeConfig())
+    with patch("resolume_mcp.client.websockets.connect", new=connection):
+        await client.websocket_action("get", "/parameter/by-id/1")
+
+    assert connection.kwargs == {"open_timeout": 10.0, "max_size": None}
+
+
+@pytest.mark.asyncio
 async def test_request_sends_plain_text_for_string_body():
     client = ResolumeClient(ResolumeConfig())
     response = MagicMock()
