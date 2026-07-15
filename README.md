@@ -37,6 +37,10 @@ uv run python -m resolume_mcp
 
 Make sure Resolume Arena or Avenue is running with the REST API enabled (Preferences → OSC/HTTP → HTTP API).
 
+### Connect from Claude Code
+
+The repo ships a project-level [`.mcp.json`](.mcp.json) that launches the server over stdio via `uv run python -m resolume_mcp`. Open the repo in Claude Code and the `resolume` server is picked up automatically; adjust `RESOLUME_HOST` / `RESOLUME_HTTP_PORT` in `.mcp.json` (or the environment) if Resolume runs on another machine.
+
 For remote control:
 - use LAN or WireGuard, not the public internet
 - set `RESOLUME_HOST` to the remote machine

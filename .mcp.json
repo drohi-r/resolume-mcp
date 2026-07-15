@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "resolume": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "resolume_mcp"],
+      "env": {
+        "RESOLUME_HOST": "127.0.0.1",
+        "RESOLUME_HTTP_PORT": "8080"
+      }
+    }
+  }
+}
