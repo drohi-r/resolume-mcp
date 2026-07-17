@@ -5,7 +5,7 @@ description: Use when connecting to, discovering, or calling strauss-visuals fle
 
 # Strauss Fleet Connect
 
-GENERATED from `strauss-mcp/registry/fleet.json` (syntagma 1.1, registry generated 2026-07-16). Do not hand-edit; regenerate from the strauss-mcp checkout:
+GENERATED from `strauss-mcp/registry/fleet.json` (syntagma 1.1, registry generated 2026-07-17). Do not hand-edit; regenerate from the strauss-mcp checkout:
 
 ```bash
 python -m strauss_mcp_tools skill --repo-dir ../<this-repo>
@@ -63,9 +63,11 @@ Only `enabled` nodes are connectable. Never launch or promote `planned`, `blocke
 | `pixelwall` | strauss-visuals/pixelwall | `local_write` | `check_environment`, `build_bridge`, `run_test_pattern`, `install_config`, `describe_node` |
 | `sase-integrations` | strauss-visuals/sase | `generated_evidence` | `sequence_images`, `resequence_images`, `render_sequence_video`, `list_video_engines`, `generate_keyframe_video`, `repair_seam_media`, `repair_seam_sequence`, `repair_seam_video`, `run_media_pipeline`, `check_integrations`, `describe_node` |
 | `aristhorne-c2pa-seal` | strauss-visuals/aristhorne-cast-node-01 | `local_write` | `seal_asset`, `queue_seal_asset`, `process_batch_jobs`, `list_batch_jobs`, `describe_node` |
-| `image-sequencer-pro` | strauss-visuals/image-sequencer-pro | `local_write` | `sequence_images`, `resequence_images`, `generate_keyframe_video`, `check_output_quality`, `describe_node` |
-| `seamfix` | strauss-visuals/seamfix | `local_write` | `repair_image`, `repair_sequence`, `repair_video`, `check_environment`, `describe_node` |
+| `image-sequencer-pro` | strauss-visuals/image-sequencer-pro | `local_write` | `sequence_images`, `resequence_images`, `generate_keyframe_video`, `check_output_quality`, `check_fleet`, `describe_node` |
+| `seamfix` | strauss-visuals/seamfix | `local_write` | `repair_image`, `repair_sequence`, `repair_video`, `check_environment`, `check_fleet`, `describe_node` |
 | `horizon360` | strauss-visuals/horizon360 | `local_write` | `project_image`, `outpaint_image`, `render_video`, `motion_report`, `analyze_equirect`, `suggest_prompt`, `check_environment`, `check_integrations`, `check_fleet`, `repair_seam_media`, `sequence_frames`, `check_sequence_quality`, `describe_node` |
+| `render-fleet` | strauss-visuals/render-fleet-coordinator | `venue_hardware` | `check_coordinator`, `coordinator_health`, `describe_node`, `host_bluetooth_connect`, `host_bluetooth_disconnect`, `host_bluetooth_power`, `host_set_brightness`, `host_set_mute`, `host_set_volume`, `host_snapshot` |
+| `strauss-controller` | strauss-visuals/controller | `local_write` | `controller_state`, `describe_node`, `list_intents`, `submit_intent` |
 | `codex-local-research-consolidation` | strauss-visuals/codex-local-research-consolidation | `local_write` | `pre_merge_clean`, `topic_scan`, `notebooklm_sync_plan`, `folder_pipeline`, `score_batch_manifest`, `improve_and_score_batch_manifest`, `diagnose`, `deep_research_check`, `investigate_blocker`, `describe_node` |
 | `evidencer` | strauss-visuals/evidencer | `local_write` | `describe_node`, `get_evidence_channel_status`, `list_projects`, `list_gates`, `get_gate_status`, `list_evidence_requests`, `get_evidence_request`, `list_evidence_results`, `get_evidence_result`, `list_evidence_observations`, `submit_evidence_request`, `submit_evidence_observation` |
 | `wikid` | strauss-visuals/Wikid | `read_only` | `get_wiki_status`, `list_projects`, `get_project_context`, `search_wiki`, `describe_node` |
