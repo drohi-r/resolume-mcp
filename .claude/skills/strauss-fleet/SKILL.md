@@ -78,6 +78,8 @@ The unified gateway exposes a read-only control plane for finding fleet function
 - `fleet_describe_app` — describe one application and its currently callable tools.
 - `fleet_search_tools` — search available tool names/descriptions with app and boundary filters.
 - `fleet_get_call_spec` — return the exact schema and boundary for one namespaced tool.
+- `fleet_list_boundaries` — list the full boundary vocabulary and whether each mode executes, plans, or is refused.
+- `fleet_get_dependency_graph` — return recorded sibling-call edges for one app or the whole fleet.
 - `gateway_status` — report ready/degraded mount counts without exposing secrets.
 
 These perform discovery only. Invoke application behavior through the namespaced `<node>__<tool>` names so every call continues through gateway policy, approval, audit, and circuit-breaker enforcement.
