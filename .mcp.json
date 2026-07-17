@@ -107,14 +107,6 @@
       ],
       "cwd": "../horizon360"
     },
-    "render-fleet": {
-      "command": "python",
-      "args": [
-        "-m",
-        "fleet_coordinator.mcp_server"
-      ],
-      "cwd": "../render-fleet-coordinator"
-    },
     "codex-local-research-consolidation": {
       "command": "python",
       "args": [
