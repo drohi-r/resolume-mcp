@@ -23,6 +23,29 @@ python -m strauss_mcp_tools connect --relative --out ../<this-repo>/.mcp.json
 
 If this repo declares its own non-fleet MCP servers in `.mcp.json` (a local server of its own, or external connectors), preserve those entries when refreshing — merge, never clobber.
 
+## Workflow
+
+1. **Find the function.** Look it up in the node table below, or ask the gateway: `fleet_search_tools` (name/description + boundary filter) or `fleet_describe_app` for one node's full surface.
+2. **Check its boundary** (table below, or `fleet_get_call_spec` for the exact schema). `read_only` / `local_verify` / `generated_evidence` are safe to call directly. Anything `local_write` or more permissive is plan-only — confirm with a human before calling; never infer consent from an unrelated earlier approval.
+3. **Call it through the namespaced `<node>__<tool>` name.** That's what keeps gateway policy, approval, audit, and circuit-breaker enforcement in the loop — never call a fleet-registered sibling's server directly, bypassing the gateway.
+4. **Unsure the node is actually reachable?** Don't assume the registry's `enabled` status is still accurate — verify it first (next section).
+
+## Verifying a node before you rely on it
+
+A live node's real `tools/list`/`describe_node` can drift from what `registry/fleet.json` records — a sibling repo ships a new tool, renames one, or changes a boundary, and the registry goes stale until someone re-verifies it against the running server.
+
+```bash
+python -m strauss_mcp_tools preflight --live --node NAME --timeout 30
+```
+
+Bounded and read-only: `initialize`, paginated `tools/list`, `describe_node` only. Never call a business tool to "test" a node.
+
+Read the resulting `live_reason_code`:
+
+- `ok` — the live server matches the registry; safe to rely on.
+- `contract_mismatch` — the live tool list, identity, or boundary disagrees with the registry's `expectedCapabilities`/`boundary`. Fix it by updating the registry entry to match what the **live server** actually reports, never the reverse — the live server is ground truth, the registry is its record. Re-run the same probe to confirm `ok` before trusting the node again.
+- `startup_failure` — the node's process didn't start cleanly on this machine (missing dependency, broken entry point). Not necessarily a registry problem; check the node's own install instructions first.
+
 ## Enabled fleet nodes and their functions
 
 Only `enabled` nodes are connectable. Never launch or promote `planned`, `blocked_missing_dependencies`, `retired`, or `external` nodes merely because their checkout exists — enabling requires the bounded live preflight evidence recorded in the registry.
@@ -77,7 +100,6 @@ Every tool call is classified by the canonical 9-value boundary vocabulary. Unkn
 
 ## Rules
 
-- Verify connections with bounded, read-only discovery only: `initialize`, paginated `tools/list`, and `describe_node` (`python -m strauss_mcp_tools preflight --live --node NAME`). Never call business tools to "test" a node.
-- Respect each node's boundary: plan-only classes (`local_write` and above) require human gating; cloud/credentialed calls never bypass the cost gates in each repo's CLI/service layer.
+- Cloud/credentialed calls never bypass the cost gates in each repo's CLI/service layer — a fleet call has no interactive cost-confirmation step, which is why MCP generation tools accept local backends only.
 - Registry changes go to `strauss-mcp/registry/fleet.json` only, in the same PR that changes a node's tool surface. Never resurrect a per-repo registry.
 - Never expose or commit credentials; required env vars appear in generated configs as `<SET_ME:VAR>` placeholders for a human or secrets manager to fill in.
