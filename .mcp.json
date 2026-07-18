@@ -54,14 +54,6 @@
       ],
       "cwd": "../uss"
     },
-    "cos-constitution-audit": {
-      "command": "node",
-      "args": [
-        "node_modules/tsx/dist/cli.cjs",
-        "scripts/mcp/constitutionAuditServer.ts"
-      ],
-      "cwd": "../COS"
-    },
     "pixelwall": {
       "command": "node",
       "args": [

@@ -5,7 +5,7 @@ description: Use when connecting to, discovering, or calling strauss-visuals fle
 
 # Strauss Fleet Connect
 
-GENERATED from `strauss-mcp/registry/fleet.json` (syntagma 1.1, registry generated 2026-07-17). Do not hand-edit; regenerate from the strauss-mcp checkout:
+GENERATED from `strauss-mcp/registry/fleet.json` (syntagma 1.1, registry generated 2026-07-18). Do not hand-edit; regenerate from the strauss-mcp checkout:
 
 ```bash
 python -m strauss_mcp_tools skill --repo-dir ../<this-repo>
@@ -56,10 +56,9 @@ Only `enabled` nodes are connectable. Never launch or promote `planned`, `blocke
 | `strauss-workspace` | strauss-visuals/neurosymbol | `read_only` | `list_projects`, `get_project_git_status`, `list_mcp_readiness`, `describe_node` |
 | `neurovizard` | strauss-visuals/neurovizard | `generated_evidence` | `describe_node`, `encode_text`, `compile_text`, `plan_text`, `compile_intent`, `plan_for_driver`, `semantic_trace`, `console_panels`, `run_conformance`, `run_benchmark`, `run_evolution`, `describe_grammar`, `list_corpus` |
 | `hermes` | strauss-visuals/HERMES | `live_system` | `acknowledge_hermes_recovery`, `auto_run_hermes_burst`, `auto_step_hermes`, `describe_node`, `disable_hermes_autonomy`, `get_hermes_durable_history`, `get_hermes_history`, `get_hermes_state`, `get_hermes_trends`, `list_hermes_vessels`, `persist_hermes_vessel`, `preview_theurgical_resonance`, `step_hermes` |
-| `strauss-communication-hub` | strauss-visuals/communicator | `local_verify` | `list_projects`, `project_status`, `project_context`, `project_verify`, `project_action`, `external_boundary_status`, `plan_external_action`, `audit_log_query`, `describe_node` |
+| `strauss-communication-hub` | strauss-visuals/communicator | `generated_evidence` | `list_projects`, `project_status`, `project_context`, `project_verify`, `project_action`, `external_boundary_status`, `plan_external_action`, `audit_log_query`, `list_entities`, `describe_entity`, `entity_request`, `entity_post_message`, `entity_fetch_messages`, `describe_node` |
 | `co-mmunicator-local-gated` | strauss-visuals/communicator | `local_write` | `verify_sqlite_integrity`, `describe_node`, `query_vector_memory`, `submit_orchestration_payload`, `submit_gem_control_proposal`, `list_approved_codex_handoffs` |
 | `uss` | strauss-visuals/uss | `local_write` | `describe_unicode_baseline`, `lookup_glyph`, `parse_expression`, `validate_registry`, `run_precedence_gate`, `run_golden_vector_tests`, `lint_scope`, `run_scope_lint_selftest`, `run_render_gate`, `verify_font_build`, `generate_render_goldens`, `build_font`, `describe_node` |
-| `cos-constitution-audit` | strauss-visuals/cos | `read_only` | `run_constitutional_audit`, `list_constitutional_laws`, `describe_node` |
 | `pixelwall` | strauss-visuals/pixelwall | `local_write` | `check_environment`, `build_bridge`, `run_test_pattern`, `install_config`, `describe_node` |
 | `sase-integrations` | strauss-visuals/sase | `generated_evidence` | `sequence_images`, `resequence_images`, `render_sequence_video`, `list_video_engines`, `generate_keyframe_video`, `repair_seam_media`, `repair_seam_sequence`, `repair_seam_video`, `run_media_pipeline`, `check_integrations`, `describe_node` |
 | `aristhorne-c2pa-seal` | strauss-visuals/aristhorne-cast-node-01 | `local_write` | `seal_asset`, `queue_seal_asset`, `process_batch_jobs`, `list_batch_jobs`, `describe_node` |
