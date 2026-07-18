@@ -31,6 +31,15 @@
       ],
       "cwd": "../HERMES"
     },
+    "straussistant-claude-mcp": {
+      "command": "straussistant-claude-mcp",
+      "args": [],
+      "cwd": "../straussistant-claude",
+      "env": {
+        "STRAUSSISTANT_ENVATO_API_KEY": "<SET_ME:STRAUSSISTANT_ENVATO_API_KEY>",
+        "STRAUSSISTANT_GEMINI_API_KEY": "<SET_ME:STRAUSSISTANT_GEMINI_API_KEY>"
+      }
+    },
     "strauss-communication-hub": {
       "command": "python",
       "args": [
