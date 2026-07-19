@@ -97,7 +97,11 @@ class ResolumeClient:
         if value is not None:
             payload["value"] = value
 
-        async with websockets.connect(self.config.websocket_url, open_timeout=timeout_s) as websocket:
+        async with websockets.connect(
+            self.config.websocket_url,
+            open_timeout=timeout_s,
+            max_size=None,
+        ) as websocket:
             bootstrap = await self._drain_websocket_bootstrap(websocket)
             await websocket.send(json.dumps(payload))
             response: Any = None

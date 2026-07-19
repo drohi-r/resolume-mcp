@@ -1,0 +1,155 @@
+{
+  "mcpServers": {
+    "neurosymbol": {
+      "command": "python",
+      "args": [
+        "-m",
+        "neurosymbol_engine.mcp_server"
+      ],
+      "cwd": "../neurosymbol"
+    },
+    "strauss-workspace": {
+      "command": "python",
+      "args": [
+        "scripts/strauss_workspace_mcp.py"
+      ],
+      "cwd": "../neurosymbol"
+    },
+    "neurovizard": {
+      "command": "python",
+      "args": [
+        "-m",
+        "neurovizard.mcp_server"
+      ],
+      "cwd": "../neurovizard"
+    },
+    "hermes": {
+      "command": "npm",
+      "args": [
+        "run",
+        "mcp"
+      ],
+      "cwd": "../HERMES"
+    },
+    "straussistant-claude-mcp": {
+      "command": "straussistant-claude-mcp",
+      "args": [],
+      "cwd": "../straussistant-claude",
+      "env": {
+        "STRAUSSISTANT_ENVATO_API_KEY": "<SET_ME:STRAUSSISTANT_ENVATO_API_KEY>",
+        "STRAUSSISTANT_GEMINI_API_KEY": "<SET_ME:STRAUSSISTANT_GEMINI_API_KEY>"
+      }
+    },
+    "strauss-communication-hub": {
+      "command": "python",
+      "args": [
+        "strauss_mcp_hub.py"
+      ],
+      "cwd": "../communicator"
+    },
+    "co-mmunicator-local-gated": {
+      "command": "node",
+      "args": [
+        "node_modules/tsx/dist/cli.mjs",
+        "scripts/mcp-server.ts"
+      ],
+      "cwd": "../communicator"
+    },
+    "uss": {
+      "command": "python",
+      "args": [
+        "-m",
+        "uss_mcp_server"
+      ],
+      "cwd": "../uss"
+    },
+    "pixelwall": {
+      "command": "node",
+      "args": [
+        "mcp-server/server.mjs"
+      ],
+      "cwd": "../Pixelwall"
+    },
+    "sase-integrations": {
+      "command": "python",
+      "args": [
+        "sase_mcp_server.py"
+      ],
+      "cwd": "../Sase"
+    },
+    "aristhorne-c2pa-seal": {
+      "command": "node",
+      "args": [
+        "plugins/aristhorne-c2pa-seal/scripts/server.mjs"
+      ],
+      "cwd": "../aristhorne-cast-node-01"
+    },
+    "image-sequencer-pro": {
+      "command": "python",
+      "args": [
+        "-m",
+        "image_sequencer_pro.mcp_server"
+      ],
+      "cwd": "../image-sequencer-pro"
+    },
+    "seamfix": {
+      "command": "python",
+      "args": [
+        "-m",
+        "seamfix.mcp_server"
+      ],
+      "cwd": "../seamfix"
+    },
+    "horizon360": {
+      "command": "python",
+      "args": [
+        "-m",
+        "horizon360.mcp_server"
+      ],
+      "cwd": "../horizon360"
+    },
+    "render-fleet": {
+      "command": "python",
+      "args": [
+        "-m",
+        "fleet_coordinator.mcp_server"
+      ],
+      "cwd": "../render-fleet-coordinator"
+    },
+    "strauss-controller": {
+      "command": ".venv/bin/python",
+      "args": [
+        "-m",
+        "strauss_controller.mcp_server"
+      ],
+      "cwd": "../controller"
+    },
+    "codex-local-research-consolidation": {
+      "command": "python",
+      "args": [
+        "-m",
+        "codex_local_research_consolidation.mcp_server"
+      ],
+      "cwd": "../codex-local-research-consolidation"
+    },
+    "evidencer": {
+      "command": "python",
+      "args": [
+        "evidencer_mcp_server.py",
+        "--config",
+        "config.portfolio22.example.json"
+      ],
+      "cwd": "../evidencer"
+    },
+    "wikid": {
+      "command": "python",
+      "args": [
+        "-m",
+        "wikid.mcp_server",
+        "--wiki-path",
+        "../strauss-visuals-master-wikid"
+      ],
+      "cwd": "../Wikid"
+    }
+  }
+}
