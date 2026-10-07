@@ -353,6 +353,7 @@ async def test_audit_layer(mock_client_factory):
 @pytest.mark.asyncio
 @patch("resolume_mcp.server._client")
 async def test_disconnect_clip(mock_client_factory):
+    """When the clip state cannot be read, send connect=false but never fall back to clearing the layer."""
     from resolume_mcp.server import disconnect_clip
 
     fake = MagicMock()
@@ -361,14 +362,13 @@ async def test_disconnect_clip(mock_client_factory):
         {"ok": True, "path": "/api/v1/composition/layers/1/clips/2/connect"},
         {"body": {"connected": {"id": 3001}}},
     ])
-    fake.websocket_action = AsyncMock(side_effect=[
-        {"response": {"value": "Connected"}},
-        {"response": {"value": "Connected"}},
-    ])
     mock_client_factory.return_value = fake
 
     payload = json.loads(await disconnect_clip(1, 2, confirm_destructive=True))
     assert payload["response"]["ok"] is True
+    assert payload["before_state"] is None and payload["after_state"] is None
+    assert payload["method"] == "connect=false"
+    assert payload["fallback_response"] is None
     assert payload["disconnected"] is False
     fake.request.assert_any_await("POST", "/composition/layers/1/clips/2/connect", body=False)
 
@@ -487,17 +487,52 @@ async def test_disconnect_clip_never_clears_layer_for_a_clip_that_is_not_playing
     from resolume_mcp.server import disconnect_clip
 
     fake = MagicMock()
-    fake.request = AsyncMock(side_effect=[
-        {"body": {"connected": {"id": 3001, "value": "Disconnected"}}},
-        {"path": "/api/v1/composition/layers/1/clips/2/connect"},
-        {"body": {"connected": {"id": 3001, "value": "Disconnected"}}},
-    ])
+    fake.request = AsyncMock(return_value={"body": {"connected": {"id": 3001, "value": "Disconnected"}}})
     mock_client_factory.return_value = fake
 
     payload = json.loads(await disconnect_clip(1, 2, confirm_destructive=True))
-    assert payload["method"] == "connect=false"
+    assert payload["method"] == "none"
     assert payload["disconnected"] is True
-    assert fake.request.await_count == 3
+    # only the state read: no connect=false (Arena might treat it as a trigger) and no layer clear
+    fake.request.assert_awaited_once_with("GET", "/composition/layers/1/clips/2")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_selected_clip_skips_clip_that_is_not_playing(mock_client_factory):
+    from resolume_mcp.server import disconnect_selected_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"body": {"connected": {"value": "Empty"}}})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_selected_clip(confirm_destructive=True))
+    assert payload["disconnected"] is True
+    fake.request.assert_awaited_once_with("GET", "/composition/clips/selected")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_event_parameter_is_fired_once_without_read_back(mock_client_factory):
+    from resolume_mcp.server import set_composition_parameter
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"body": {"tempocontroller": {"tempo_push": {"id": 9, "valuetype": "ParamEvent", "value": False}}}})
+    fake.websocket_action = AsyncMock(return_value={"response": None})
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await set_composition_parameter("tempocontroller/tempo_push", "true"))
+    assert payload["verified"] is None
+    assert fake.websocket_action.await_count == 1
+    assert fake.request.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_for_resolume_rejects_long_interval():
+    from resolume_mcp.server import wait_for_resolume
+
+    with pytest.raises(ValueError, match="interval_s in"):
+        await wait_for_resolume(timeout_s=60, interval_s=120)
 
 
 @pytest.mark.asyncio

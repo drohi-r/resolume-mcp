@@ -85,10 +85,15 @@ class ResolumeClient:
     async def _websocket(self, timeout_s: float) -> AsyncIterator[Any]:
         try:
             # max_size=None: the bootstrap message is the full composition, which can exceed the 1 MiB default.
-            async with websockets.connect(self.config.websocket_url, open_timeout=timeout_s, max_size=None) as websocket:
-                yield websocket
-        except (OSError, TimeoutError, websockets.InvalidHandshake, websockets.ConnectionClosedError) as exc:
+            websocket = await websockets.connect(self.config.websocket_url, open_timeout=timeout_s, max_size=None)
+        except (OSError, TimeoutError, websockets.InvalidHandshake) as exc:
             raise ResolumeConnectionError(_unreachable_message(self.config.websocket_url, exc)) from exc
+        try:
+            yield websocket
+        except (websockets.ConnectionClosed, OSError) as exc:
+            raise ResolumeConnectionError(f"Resolume closed the WebSocket connection mid-request ({type(exc).__name__}: {exc}).") from exc
+        finally:
+            await websocket.close()
 
     async def _await_reply(self, websocket: Any, parameter: str, reply_timeout_s: float) -> tuple[Any, int]:
         loop = asyncio.get_running_loop()

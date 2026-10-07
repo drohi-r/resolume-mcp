@@ -16,7 +16,7 @@ from typing import Any
 
 from resolume_mcp.client import ResolumeClient
 from resolume_mcp.config import load_config
-from resolume_mcp.server import _lookup_parameter_node, _parameter_action
+from resolume_mcp.server import _lookup_parameter_node, _verify_parameter_value
 
 
 def show(title: str, payload: Any) -> None:
@@ -111,14 +111,19 @@ async def try_select_methods(client: ResolumeClient, kind: str, home_path: str, 
 
 async def write_checks(client: ResolumeClient) -> None:
     layer = await client.request("GET", "/composition/layers/1")
-    current = _lookup_parameter_node(layer, "video/opacity")["node"].get("value")
+    node = _lookup_parameter_node(layer, "video/opacity")["node"]
+    parameter = f"/parameter/by-id/{node['id']}"
+    current = node.get("value")
     probe_value = 0.5 if current != 0.5 else 0.6
-    changed = await _parameter_action(client, action="set", rest_path="/composition/layers/1", parameter_suffix="video/opacity", value=probe_value)
-    restored = await _parameter_action(client, action="set", rest_path="/composition/layers/1", parameter_suffix="video/opacity", value=current)
-    show("websocket set delivery (set layer 1 opacity, then restore)", {
+    # Send exactly once (no server-side retry) so a set dropped by the immediate close shows up as unverified.
+    await client.websocket_action("set", parameter, value=probe_value)
+    changed = await _verify_parameter_value(client, "/composition/layers/1", "video/opacity", probe_value)
+    await client.websocket_action("set", parameter, value=current)
+    restored = await _verify_parameter_value(client, "/composition/layers/1", "video/opacity", current)
+    show("websocket set delivery: single send, then restore", {
         "original": current,
         "set_to": probe_value,
-        "verified_after_set": changed["verified"],
+        "verified_after_single_set": changed["verified"],
         "value_after_set": changed["value_after"],
         "verified_after_restore": restored["verified"],
     })

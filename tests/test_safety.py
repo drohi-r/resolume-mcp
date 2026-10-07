@@ -25,6 +25,11 @@ from resolume_mcp.server import _destructive_reason
         ("POST", "/composition/layers/1/clips/2/connect", False),
         ("set", "/composition/layers/1/clips/2/connect", False),
         ("POST", "/Composition/CLEAR/", None),
+        ("POST", "/composition/layers/1/clear#x", None),
+        ("POST", "/composition/layers/1/clear?x=1", None),
+        ("POST", "/composition/./new", None),
+        ("POST", "/composition/layers/../new", None),
+        ("POST", "/composition/layers/1/clips/2/../../clear", None),
     ],
 )
 def test_destructive_reason_flags_destructive_calls(verb, path, value):

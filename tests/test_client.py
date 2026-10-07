@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -158,12 +159,12 @@ class _FakeWebSocket:
     async def send(self, raw):
         self.sent.append(json.loads(raw))
 
+    async def close(self):
+        self.closed = True
+
 
 def _patch_websocket(fake):
-    connection = MagicMock()
-    connection.__aenter__ = AsyncMock(return_value=fake)
-    connection.__aexit__ = AsyncMock(return_value=False)
-    return patch("resolume_mcp.client.websockets.connect", return_value=connection)
+    return patch("resolume_mcp.client.websockets.connect", new=AsyncMock(return_value=fake))
 
 
 BOOTSTRAP = ['{"layers": []}', '{"type": "sources_update"}', '{"type": "effects_update"}']
@@ -269,3 +270,56 @@ def test_message_matches_parameter():
     assert not message_matches_parameter({"id": 13}, "/parameter/by-id/12")
     assert not message_matches_parameter({"id": 12}, "/a/b")
     assert not message_matches_parameter("text", "/a/b")
+
+
+@pytest.mark.asyncio
+async def test_websocket_closed_mid_request_is_translated():
+    import websockets
+
+    class ClosingWebSocket(_FakeWebSocket):
+        async def recv(self):
+            if self.messages:
+                return self.messages.pop(0)
+            raise websockets.ConnectionClosedOK(None, None)
+
+    fake = ClosingWebSocket(BOOTSTRAP)
+    with _patch_websocket(fake):
+        with pytest.raises(ResolumeConnectionError, match="closed the WebSocket connection mid-request"):
+            await ResolumeClient(ResolumeConfig()).websocket_watch(["/parameter/by-id/1"], duration_s=0.5)
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_websocket_round_trip_against_real_server():
+    """Exercise the real websockets library: oversized bootstrap, matched get reply, fire-and-forget set, watch."""
+    import websockets
+
+    received = []
+
+    async def handler(connection):
+        await connection.send(json.dumps({"layers": ["x" * (2 * 1024 * 1024)]}))  # bigger than the old 1 MiB cap
+        async for raw in connection:
+            message = json.loads(raw)
+            received.append(message)
+            if message["action"] in {"get", "subscribe"}:
+                await connection.send(json.dumps({"type": "parameter_update", "id": 77, "value": 0.25}))
+                await connection.send(json.dumps({"type": "parameter_update", "path": message["parameter"], "value": 0.5}))
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = ResolumeClient(ResolumeConfig(http_port=port))
+
+        got = await client.websocket_action("get", "/parameter/by-id/12", reply_timeout_s=2)
+        assert got["response"]["value"] == 0.5
+        assert got["skipped_message_count"] == 1
+        assert got["bootstrap_message_count"] == 1
+
+        await client.websocket_action("set", "/parameter/by-id/12", value=0.75)
+
+        watched = await client.websocket_watch(["/parameter/by-id/12"], duration_s=0.3)
+        assert watched["update_count"] == 1
+        assert watched["unmatched_message_count"] == 1
+
+    await asyncio.sleep(0.05)
+    assert {"action": "set", "parameter": "/parameter/by-id/12", "value": 0.75} in received
+    assert [m["action"] for m in received[-2:]] == ["subscribe", "unsubscribe"]

@@ -8,7 +8,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
 
 - Repo path: wherever this repo is cloned (e.g. `C:\Users\<user>\resolume-mcp` on the Windows media servers)
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `246 passed` (2026-10-08, Windows)
+- Validation status: `256 passed` (2026-10-08, Windows)
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
 - Intended deployment environment: Windows media servers

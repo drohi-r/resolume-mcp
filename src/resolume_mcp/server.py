@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import posixpath
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -64,7 +65,9 @@ def _destructive_reason(verb: str, path: str, value: Any = None) -> str | None:
         return None
     if verb in {"delete", "remove"}:
         return f"{verb.upper()} removes Resolume content."
-    segments = [segment for segment in (path or "").strip().lower().split("/") if segment]
+    # httpx drops ?query/#fragment and resolves dot segments before sending, so classify the same path.
+    normalized = posixpath.normpath("/" + urlsplit((path or "").strip().lower()).path)
+    segments = [segment for segment in normalized.split("/") if segment]
     if len(segments) >= 2 and segments[0] == "api":
         segments = segments[2:]
     if not segments:
@@ -345,7 +348,9 @@ async def _parameter_action(
         _validate_choice_value(node, value, reference["resolved_suffix"])
     response = await client.websocket_action(action, reference["parameter_path"], value=value)
     result: dict[str, Any] = {"request": request, "response": response, "parameter": node}
-    if action == "set":
+    if action == "set" and node.get("valuetype") == "ParamEvent":
+        result.update({"value_before": node.get("value"), "verified": None, "note": "Event parameter: fired once, nothing to read back."})
+    elif action == "set":
         result["value_before"] = node.get("value")
         verification = await _verify_parameter_value(client, rest_path, reference["resolved_suffix"], value)
         # Arena can drop a set that lands right after a clip load; one resend fixes that. A playhead
@@ -439,11 +444,24 @@ def _is_connected(state: Any) -> bool:
 
 async def _disconnect_clip(client: ResolumeClient, layer_index: int, clip_index: int) -> dict[str, Any]:
     before_state = await _clip_connection_state(client, layer_index, clip_index)
+    if isinstance(before_state, str) and not _is_connected(before_state):
+        # Arena may treat connect=false as a trigger, and the fallback would stop whatever else is playing.
+        return {
+            "layer_index": layer_index,
+            "clip_index": clip_index,
+            "response": None,
+            "fallback_response": None,
+            "method": "none",
+            "before_state": before_state,
+            "after_state": before_state,
+            "disconnected": True,
+            "note": "Clip was not playing; nothing was sent.",
+        }
     response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
     after_state = await _clip_connection_state(client, layer_index, clip_index)
     method = "connect=false"
     fallback_response = None
-    if _is_connected(after_state):
+    if _is_connected(before_state) and _is_connected(after_state):
         # Arena 7 answers 204 to connect=false but keeps the clip playing. A layer only plays one clip,
         # so clearing the layer stops exactly this clip; the media stays in its slot.
         fallback_response = await client.request("POST", f"/composition/layers/{layer_index}/clear")
@@ -1672,9 +1690,9 @@ async def get_layer_summary(layer_index: int) -> str:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def wait_for_resolume(timeout_s: float = 60.0, interval_s: float = 1.0) -> str:
-    """Poll Resolume's REST API until it answers (e.g. right after launching Arena). Returns ready, how long it took and product info. timeout_s is capped at 300."""
-    if not 0 < timeout_s <= 300 or interval_s <= 0:
-        raise ValueError("timeout_s must be in (0, 300] and interval_s must be positive.")
+    """Poll Resolume's REST API until it answers (e.g. right after launching Arena). Returns ready, how long it took and product info. timeout_s is capped at 300, interval_s at 10."""
+    if not 0 < timeout_s <= 300 or not 0 < interval_s <= 10:
+        raise ValueError("timeout_s must be in (0, 300] and interval_s in (0, 10].")
     client = _client()
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -2742,6 +2760,8 @@ async def disconnect_selected_clip(confirm_destructive: bool = False) -> str:
     client = _client()
     before_payload = await client.request("GET", "/composition/clips/selected")
     before_state = _extract_body(before_payload).get("connected", {}).get("value") if isinstance(_extract_body(before_payload), dict) else None
+    if isinstance(before_state, str) and not _is_connected(before_state):
+        return _json_response({"response": None, "before_state": before_state, "after_state": before_state, "disconnected": True, "note": "Selected clip was not playing; nothing was sent."})
     response = await client.request("POST", "/composition/clips/selected/connect", body=False)
     after_payload = await client.request("GET", "/composition/clips/selected")
     after_state = _extract_body(after_payload).get("connected", {}).get("value") if isinstance(_extract_body(after_payload), dict) else None
@@ -2842,7 +2862,7 @@ async def trigger_column(column_index: int) -> str:
 
 @mcp.tool(annotations=_DESTRUCTIVE)
 async def disconnect_column(column_index: int, confirm_destructive: bool = False) -> str:
-    """Disconnect a column. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Disconnect a column via connect=false, which Arena 7 ignores for clips; check the result with get_composition_summary. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
         return _confirmation_required("disconnect_column", f"This will disconnect column {column_index}. Re-call with confirm_destructive=True to proceed.")
     result = await _client().request("POST", f"/composition/columns/{column_index}/connect", body=False)
