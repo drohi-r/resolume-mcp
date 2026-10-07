@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -243,8 +244,10 @@ async def _resolve_parameter_reference(
     rest_path: str,
     parameter_suffix: str,
     aliases: tuple[str, ...] = (),
+    rest_payload: Any = None,
 ) -> dict[str, Any]:
-    rest_payload = await client.request("GET", rest_path)
+    if rest_payload is None:
+        rest_payload = await client.request("GET", rest_path)
     resolved = _lookup_parameter_node(rest_payload, parameter_suffix, aliases=aliases)
     node = resolved["node"]
     return {
@@ -252,9 +255,41 @@ async def _resolve_parameter_reference(
         "resolved_suffix": resolved["suffix"],
         "parameter_id": node["id"],
         "parameter_path": _parameter_path_from_id(node["id"]),
-        "rest_payload": rest_payload,
         "node": node,
     }
+
+
+_SET_VERIFY_ATTEMPTS = 4
+_SET_VERIFY_DELAY_S = 0.1
+_MAX_WATCH_DURATION_S = 30.0
+_UNSUBSCRIBE_NOTE = (
+    "Subscriptions only live for the duration of a subscribe/watch call and end automatically, "
+    "so there is nothing to unsubscribe."
+)
+
+
+def _values_match(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return actual == expected
+    if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+        return math.isclose(actual, expected, rel_tol=1e-4, abs_tol=1e-6)
+    return actual == expected
+
+
+async def _verify_parameter_value(client: ResolumeClient, rest_path: str, suffix: str, expected: Any) -> dict[str, Any]:
+    """Read a parameter back over REST after a WebSocket set, polling briefly for Resolume to apply it."""
+    value_after: Any = None
+    for attempt in range(_SET_VERIFY_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(_SET_VERIFY_DELAY_S)
+        try:
+            node = _lookup_parameter_node(await client.request("GET", rest_path), suffix)["node"]
+        except Exception as exc:
+            return {"value_after": value_after, "verified": False, "verify_error": str(exc)}
+        value_after = node.get("value")
+        if _values_match(value_after, expected):
+            return {"value_after": value_after, "verified": True}
+    return {"value_after": value_after, "verified": False}
 
 
 async def _parameter_action(
@@ -265,20 +300,36 @@ async def _parameter_action(
     parameter_suffix: str,
     value: Any = None,
     aliases: tuple[str, ...] = (),
+    rest_payload: Any = None,
+    duration_s: float = 2.0,
 ) -> dict[str, Any]:
-    reference = await _resolve_parameter_reference(client, rest_path, parameter_suffix, aliases=aliases)
-    response = await client.websocket_action(action, reference["parameter_path"], value=value)
-    return {
-        "request": {
-            "action": action,
-            "parameter": reference["parameter_path"],
-            "rest_path": rest_path,
-            "resolved_suffix": reference["resolved_suffix"],
-            **({"value": value} if action == "set" else {}),
-        },
-        "response": response,
-        "parameter": reference["node"],
+    if action == "unsubscribe":
+        return {
+            "request": {"action": action, "rest_path": rest_path, "parameter_suffix": parameter_suffix},
+            "response": None,
+            "note": _UNSUBSCRIBE_NOTE,
+        }
+    reference = await _resolve_parameter_reference(client, rest_path, parameter_suffix, aliases=aliases, rest_payload=rest_payload)
+    node = reference["node"]
+    request = {
+        "action": action,
+        "parameter": reference["parameter_path"],
+        "rest_path": rest_path,
+        "resolved_suffix": reference["resolved_suffix"],
+        **({"value": value} if action == "set" else {}),
     }
+    if action == "get":
+        # The REST payload already carries the live value, so no WebSocket round trip is needed.
+        return {"request": request, "response": {"source": "rest", "response": node}, "parameter": node, "value": node.get("value")}
+    if action == "subscribe":
+        response = await client.websocket_watch([reference["parameter_path"]], duration_s=_watch_duration(duration_s))
+        return {"request": request, "response": response, "parameter": node}
+    response = await client.websocket_action(action, reference["parameter_path"], value=value)
+    result: dict[str, Any] = {"request": request, "response": response, "parameter": node}
+    if action == "set":
+        result["value_before"] = node.get("value")
+        result.update(await _verify_parameter_value(client, rest_path, reference["resolved_suffix"], value))
+    return result
 
 
 async def _websocket_get_or_error(client: ResolumeClient, parameter: str) -> dict[str, Any]:
@@ -294,6 +345,7 @@ async def _resolved_get_or_error(
     rest_path: str,
     parameter_suffix: str,
     aliases: tuple[str, ...] = (),
+    rest_payload: Any = None,
 ) -> dict[str, Any]:
     try:
         return await _parameter_action(
@@ -302,6 +354,7 @@ async def _resolved_get_or_error(
             rest_path=rest_path,
             parameter_suffix=parameter_suffix,
             aliases=aliases,
+            rest_payload=rest_payload,
         )
     except Exception as exc:
         return {
@@ -310,6 +363,32 @@ async def _resolved_get_or_error(
             "parameter_suffix": parameter_suffix,
             "aliases": list(aliases),
         }
+
+
+def _watch_duration(duration_s: float) -> float:
+    if not 0 < duration_s <= _MAX_WATCH_DURATION_S:
+        raise ValueError(f"duration_s must be greater than 0 and at most {_MAX_WATCH_DURATION_S:g} seconds.")
+    return duration_s
+
+
+async def _watch_resolved_parameters(
+    client: ResolumeClient,
+    targets: list[dict[str, Any]],
+    duration_s: float,
+) -> dict[str, Any]:
+    """Resolve each target's parameter id over REST (one GET per scope) and watch them on a single connection."""
+    payloads: dict[str, Any] = {}
+    resolved: list[dict[str, Any]] = []
+    for target in targets:
+        rest_path = target["rest_path"]
+        if rest_path not in payloads:
+            payloads[rest_path] = await client.request("GET", rest_path)
+        reference = await _resolve_parameter_reference(
+            client, rest_path, target["parameter_suffix"], aliases=target.get("aliases", ()), rest_payload=payloads[rest_path]
+        )
+        resolved.append({**{k: v for k, v in target.items() if k != "aliases"}, "parameter": reference["parameter_path"]})
+    response = await client.websocket_watch([target["parameter"] for target in resolved], duration_s=duration_s)
+    return {"action": "subscribe", "targets": resolved, "response": response}
 
 
 async def _clip_connection_state(client: ResolumeClient, layer_index: int, clip_index: int) -> str | None:
@@ -442,23 +521,37 @@ async def _get_embedded_collection(
         return direct
 
     fallback = await client.request("GET", fallback_path)
-    fallback_body = _extract_body(fallback)
-    collection: Any = None
-    if isinstance(fallback_body, dict):
-        collection = fallback_body.get(collection_key)
-
     return {
         "method": "GET",
         "path": direct.get("path", direct_path),
         "url": direct.get("url"),
         "status_code": direct.get("status_code"),
-        "ok": isinstance(collection, list),
         "content_type": direct.get("content_type", fallback.get("content_type", "")),
+        **_embedded_collection(fallback, collection_key),
+    }
+
+
+def _embedded_collection(payload: Any, collection_key: str) -> dict[str, Any]:
+    """Pull a collection (layers, clips, ...) out of an already-fetched parent payload."""
+    body = _extract_body(payload)
+    collection = body.get(collection_key) if isinstance(body, dict) else None
+    return {
+        "ok": isinstance(collection, list),
         "body": collection if isinstance(collection, list) else [],
         "fallback_used": True,
-        "fallback_source": fallback,
-        "direct_response": direct,
+        "fallback_path": payload.get("path") if isinstance(payload, dict) else None,
     }
+
+
+def _without_collections(payload: Any, keys: tuple[str, ...]) -> Any:
+    """Copy of a REST response with collections removed that the caller reports separately."""
+    body = _extract_body(payload)
+    if not isinstance(payload, dict) or not isinstance(body, dict):
+        return payload
+    return {**payload, "body": {key: value for key, value in body.items() if key not in keys}}
+
+
+_COMPOSITION_COLLECTIONS = ("layers", "columns", "layergroups", "decks")
 
 
 def _advanced_output_preferences() -> AdvancedOutputPreferences:
@@ -475,6 +568,7 @@ async def _parameter_tool_impl(
     parameter_suffix: str,
     value: Any = None,
     aliases: tuple[str, ...] = (),
+    duration_s: float = 2.0,
 ) -> str:
     client = _client()
     kwargs: dict[str, Any] = {
@@ -482,11 +576,21 @@ async def _parameter_tool_impl(
         "rest_path": scope_path,
         "parameter_suffix": parameter_suffix,
         "aliases": aliases,
+        "duration_s": duration_s,
     }
     if value is not None:
         kwargs["value"] = value
     result = await _parameter_action(client, **kwargs)
     return _json_response(result)
+
+
+async def _output_watch_tool_impl(path: str, duration_s: float) -> str:
+    result = await _client().websocket_watch([path], duration_s=_watch_duration(duration_s))
+    return _json_response(result)
+
+
+def _output_unsubscribe_note(path: str) -> str:
+    return _json_response({"action": "unsubscribe", "parameter": path, "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
 async def _output_websocket_tool_impl(action: str, path: str, value: Any = None) -> str:
@@ -508,27 +612,39 @@ def _parse_playback_targets(layer_indices_json: str, clip_pairs_json: str) -> tu
     return layer_indices, clip_pairs
 
 
-async def _playback_state_bulk_action(action: str, layer_indices: list[Any], clip_pairs: list[dict[str, Any]]) -> list[Any]:
-    client = _client()
-    results: list[Any] = []
-    results.append(await _parameter_action(client, action=action, rest_path="/composition", parameter_suffix="tempocontroller/tempo"))
+def _playback_state_targets(layer_indices: list[Any], clip_pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = [{"rest_path": "/composition", "parameter_suffix": "tempocontroller/tempo"}]
     for li in layer_indices:
         base = f"/composition/layers/{li}"
-        results.append(await _parameter_action(client, action=action, rest_path=base, parameter_suffix="video/opacity"))
-        results.append(await _parameter_action(client, action=action, rest_path=base, parameter_suffix="bypassed"))
+        targets.append({"layer_index": li, "rest_path": base, "parameter_suffix": "video/opacity"})
+        targets.append({"layer_index": li, "rest_path": base, "parameter_suffix": "bypassed"})
     for pair in clip_pairs:
         base = f"/composition/layers/{pair['layer_index']}/clips/{pair['clip_index']}"
         for suffix in ("connected", "transport/speed", "transport/position"):
             aliases = ("transport/controls/speed",) if suffix == "transport/speed" else ()
-            results.append(await _parameter_action(client, action=action, rest_path=base, parameter_suffix=suffix, aliases=aliases))
-    return results
+            targets.append({"layer_index": pair["layer_index"], "clip_index": pair["clip_index"], "rest_path": base, "parameter_suffix": suffix, "aliases": aliases})
+    return targets
 
 
-async def _fetch_parameters(client: ResolumeClient, rest_path: str, suffixes: list[str], aliases_map: dict[str, tuple[str, ...]] | None = None) -> dict[str, Any]:
+async def _fetch_parameters(
+    client: ResolumeClient,
+    rest_path: str,
+    suffixes: list[str],
+    aliases_map: dict[str, tuple[str, ...]] | None = None,
+    rest_payload: Any = None,
+) -> dict[str, Any]:
+    """Resolve several parameters from a single REST read of their scope."""
     aliases_map = aliases_map or {}
+    if rest_payload is None:
+        try:
+            rest_payload = await client.request("GET", rest_path)
+        except Exception as exc:
+            return {suffix: {"error": str(exc), "rest_path": rest_path, "parameter_suffix": suffix} for suffix in suffixes}
     results: dict[str, Any] = {}
     for suffix in suffixes:
-        results[suffix] = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix=suffix, aliases=aliases_map.get(suffix, ()))
+        results[suffix] = await _resolved_get_or_error(
+            client, rest_path=rest_path, parameter_suffix=suffix, aliases=aliases_map.get(suffix, ()), rest_payload=rest_payload
+        )
     return results
 
 
@@ -654,15 +770,14 @@ async def websocket_reset(parameter: str) -> str:
 
 
 @mcp.tool()
-async def websocket_subscribe(parameter: str) -> str:
-    result = await _client().websocket_action("subscribe", parameter)
+async def websocket_subscribe(parameter: str, duration_s: float = 2.0) -> str:
+    result = await _client().websocket_watch([parameter], duration_s=_watch_duration(duration_s))
     return _json_response(result)
 
 
 @mcp.tool()
 async def websocket_unsubscribe(parameter: str) -> str:
-    result = await _client().websocket_action("unsubscribe", parameter)
-    return _json_response(result)
+    return _json_response({"action": "unsubscribe", "parameter": parameter, "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
 @mcp.tool()
@@ -751,8 +866,8 @@ async def set_composition_parameter(parameter_suffix: str, value_json: str) -> s
 
 
 @mcp.tool()
-async def subscribe_composition_parameter(parameter_suffix: str) -> str:
-    return await _parameter_tool_impl("/composition", "subscribe", parameter_suffix)
+async def subscribe_composition_parameter(parameter_suffix: str, duration_s: float = 2.0) -> str:
+    return await _parameter_tool_impl("/composition", "subscribe", parameter_suffix, duration_s=duration_s)
 
 
 @mcp.tool()
@@ -1313,36 +1428,14 @@ async def add_layer(body_json: str = "") -> str:
 
 @mcp.tool()
 async def get_composition_overview() -> str:
-    client = _client()
-    composition = await client.request("GET", "/composition")
-    layers = await _get_embedded_collection(
-        client,
-        direct_path="/composition/layers",
-        fallback_path="/composition",
-        collection_key="layers",
-    )
-    columns = await _get_embedded_collection(
-        client,
-        direct_path="/composition/columns",
-        fallback_path="/composition",
-        collection_key="columns",
-    )
-    groups = await _get_embedded_collection(
-        client,
-        direct_path="/composition/layergroups",
-        fallback_path="/composition",
-        collection_key="layergroups",
-    )
-    decks = await client.request("GET", "/composition")
-    if isinstance(decks.get("body"), dict):
-        decks["body"] = decks["body"].get("decks", [])
+    composition = await _client().request("GET", "/composition")
     return _json_response(
         {
-            "composition": composition,
-            "layers": layers,
-            "columns": columns,
-            "groups": groups,
-            "decks": decks,
+            "composition": _without_collections(composition, _COMPOSITION_COLLECTIONS),
+            "layers": _embedded_collection(composition, "layers"),
+            "columns": _embedded_collection(composition, "columns"),
+            "groups": _embedded_collection(composition, "layergroups"),
+            "decks": _embedded_collection(composition, "decks"),
         }
     )
 
@@ -1352,18 +1445,12 @@ async def get_layer_snapshot(layer_index: int) -> str:
     client = _client()
     rest_path = f"/composition/layers/{layer_index}"
     layer = await client.request("GET", rest_path)
-    clips = await _get_embedded_collection(
-        client,
-        direct_path=f"{rest_path}/clips",
-        fallback_path=rest_path,
-        collection_key="clips",
-    )
-    params = await _fetch_parameters(client, rest_path, ["video/opacity", "bypassed"])
+    params = await _fetch_parameters(client, rest_path, ["video/opacity", "bypassed"], rest_payload=layer)
     return _json_response(
         {
             "layer_index": layer_index,
-            "layer": layer,
-            "clips": clips,
+            "layer": _without_collections(layer, ("clips",)),
+            "clips": _embedded_collection(layer, "clips"),
             "opacity": params["video/opacity"],
             "bypassed": params["bypassed"],
         }
@@ -1373,23 +1460,12 @@ async def get_layer_snapshot(layer_index: int) -> str:
 @mcp.tool()
 async def audit_layer(layer_index: int) -> str:
     client = _client()
-    layer = await client.request("GET", f"/composition/layers/{layer_index}")
-    clips = await _get_embedded_collection(
-        client,
-        direct_path=f"/composition/layers/{layer_index}/clips",
-        fallback_path=f"/composition/layers/{layer_index}",
-        collection_key="clips",
-    )
-    opacity = await _resolved_get_or_error(
-        client,
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix="video/opacity",
-    )
-    bypassed = await _resolved_get_or_error(
-        client,
-        rest_path=f"/composition/layers/{layer_index}",
-        parameter_suffix="bypassed",
-    )
+    rest_path = f"/composition/layers/{layer_index}"
+    layer = await client.request("GET", rest_path)
+    clips = _embedded_collection(layer, "clips")
+    params = await _fetch_parameters(client, rest_path, ["video/opacity", "bypassed"], rest_payload=layer)
+    opacity = params["video/opacity"]
+    bypassed = params["bypassed"]
 
     findings: list[str] = []
     clip_count: int | None = None
@@ -1414,7 +1490,7 @@ async def audit_layer(layer_index: int) -> str:
     return _json_response(
         {
             "layer_index": layer_index,
-            "layer": layer,
+            "layer": _without_collections(layer, ("clips",)),
             "clips": clips,
             "opacity": opacity,
             "bypassed": bypassed,
@@ -1431,31 +1507,15 @@ async def audit_layer(layer_index: int) -> str:
 async def audit_composition() -> str:
     client = _client()
     composition = await client.request("GET", "/composition")
-    layers = await _get_embedded_collection(
-        client,
-        direct_path="/composition/layers",
-        fallback_path="/composition",
-        collection_key="layers",
-    )
-    columns = await _get_embedded_collection(
-        client,
-        direct_path="/composition/columns",
-        fallback_path="/composition",
-        collection_key="columns",
-    )
-    groups = await _get_embedded_collection(
-        client,
-        direct_path="/composition/layergroups",
-        fallback_path="/composition",
-        collection_key="layergroups",
-    )
-    decks = await client.request("GET", "/composition")
-    if isinstance(decks.get("body"), dict):
-        decks["body"] = decks["body"].get("decks", [])
+    layers = _embedded_collection(composition, "layers")
+    columns = _embedded_collection(composition, "columns")
+    groups = _embedded_collection(composition, "layergroups")
+    decks = _embedded_collection(composition, "decks")
     bpm = await _resolved_get_or_error(
         client,
         rest_path="/composition",
         parameter_suffix="tempocontroller/tempo",
+        rest_payload=composition,
     )
 
     findings: list[str] = []
@@ -1483,7 +1543,7 @@ async def audit_composition() -> str:
 
     return _json_response(
         {
-            "composition": composition,
+            "composition": _without_collections(composition, _COMPOSITION_COLLECTIONS),
             "layers": layers,
             "columns": columns,
             "groups": groups,
@@ -1516,8 +1576,8 @@ async def set_layer_parameter(layer_index: int, parameter_suffix: str, value_jso
 
 
 @mcp.tool()
-async def subscribe_layer_parameter(layer_index: int, parameter_suffix: str) -> str:
-    return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "subscribe", parameter_suffix)
+async def subscribe_layer_parameter(layer_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "subscribe", parameter_suffix, duration_s=duration_s)
 
 
 @mcp.tool()
@@ -1768,6 +1828,7 @@ async def get_clip_snapshot(layer_index: int, clip_index: int) -> str:
         client, rest_path,
         ["connected", "transport/speed", "selected", "transport/position"],
         aliases_map={"transport/speed": ("transport/controls/speed",)},
+        rest_payload=clip,
     )
     return _json_response(
         {
@@ -1787,16 +1848,17 @@ async def audit_clip(layer_index: int, clip_index: int) -> str:
     client = _client()
     rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
     clip = await client.request("GET", rest_path)
-    connected = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="connected")
-    selected = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="selected")
-    speed = await _resolved_get_or_error(
-        client,
-        rest_path=rest_path,
-        parameter_suffix="transport/speed",
-        aliases=("transport/controls/speed",),
+    params = await _fetch_parameters(
+        client, rest_path,
+        ["connected", "selected", "transport/speed", "transport/position", "bypassed"],
+        aliases_map={"transport/speed": ("transport/controls/speed",)},
+        rest_payload=clip,
     )
-    position = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="transport/position")
-    bypassed = await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="bypassed")
+    connected = params["connected"]
+    selected = params["selected"]
+    speed = params["transport/speed"]
+    position = params["transport/position"]
+    bypassed = params["bypassed"]
 
     findings: list[str] = []
     connected_response = connected.get("response", {}).get("response")
@@ -2042,49 +2104,35 @@ async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: 
                 raise ValueError("Each clip pair must include layer_index and clip_index.")
 
     client = _client()
-    composition = await client.request("GET", "/composition")
-    tempo = await _resolved_get_or_error(
-        client,
-        rest_path="/composition",
-        parameter_suffix="tempocontroller/tempo",
-    )
+    tempo = (await _fetch_parameters(client, "/composition", ["tempocontroller/tempo"]))["tempocontroller/tempo"]
 
     layers: list[dict[str, Any]] = []
-    if layer_indices:
-        for layer_index in layer_indices:
-            rest_path = f"/composition/layers/{layer_index}"
-            layers.append(
-                {
-                    "layer_index": layer_index,
-                    "opacity": await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="video/opacity"),
-                    "bypassed": await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="bypassed"),
-                }
-            )
+    for layer_index in layer_indices:
+        params = await _fetch_parameters(client, f"/composition/layers/{layer_index}", ["video/opacity", "bypassed"])
+        layers.append({"layer_index": layer_index, "opacity": params["video/opacity"], "bypassed": params["bypassed"]})
 
     clips: list[dict[str, Any]] = []
-    if clip_pairs:
-        for pair in clip_pairs:
-            layer_index = pair["layer_index"]
-            clip_index = pair["clip_index"]
-            rest_path = f"/composition/layers/{layer_index}/clips/{clip_index}"
-            clips.append(
-                {
-                    "layer_index": layer_index,
-                    "clip_index": clip_index,
-                    "connected": await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="connected"),
-                    "speed": await _resolved_get_or_error(
-                        client,
-                        rest_path=rest_path,
-                        parameter_suffix="transport/speed",
-                        aliases=("transport/controls/speed",),
-                    ),
-                    "position": await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="transport/position"),
-                }
-            )
+    for pair in clip_pairs:
+        layer_index = pair["layer_index"]
+        clip_index = pair["clip_index"]
+        params = await _fetch_parameters(
+            client,
+            f"/composition/layers/{layer_index}/clips/{clip_index}",
+            ["connected", "transport/speed", "transport/position"],
+            aliases_map={"transport/speed": ("transport/controls/speed",)},
+        )
+        clips.append(
+            {
+                "layer_index": layer_index,
+                "clip_index": clip_index,
+                "connected": params["connected"],
+                "speed": params["transport/speed"],
+                "position": params["transport/position"],
+            }
+        )
 
     return _json_response(
         {
-            "composition": composition,
             "tempo": tempo,
             "layers": layers,
             "clips": clips,
@@ -2096,17 +2144,16 @@ async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: 
 
 
 @mcp.tool()
-async def subscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
+async def subscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "", duration_s: float = 2.0) -> str:
     layer_indices, clip_pairs = _parse_playback_targets(layer_indices_json, clip_pairs_json)
-    results = await _playback_state_bulk_action("subscribe", layer_indices, clip_pairs)
-    return _json_response({"action": "subscribe", "results": results})
+    targets = _playback_state_targets(layer_indices, clip_pairs)
+    return _json_response(await _watch_resolved_parameters(_client(), targets, _watch_duration(duration_s)))
 
 
 @mcp.tool()
 async def unsubscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
-    layer_indices, clip_pairs = _parse_playback_targets(layer_indices_json, clip_pairs_json)
-    results = await _playback_state_bulk_action("unsubscribe", layer_indices, clip_pairs)
-    return _json_response({"action": "unsubscribe", "results": results})
+    _parse_playback_targets(layer_indices_json, clip_pairs_json)
+    return _json_response({"action": "unsubscribe", "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
 @mcp.tool()
@@ -2114,7 +2161,7 @@ async def get_deck_snapshot(deck_index: int) -> str:
     client = _client()
     rest_path = f"/composition/decks/{deck_index}"
     deck = await client.request("GET", rest_path)
-    params = await _fetch_parameters(client, rest_path, ["selected", "scrollx"])
+    params = await _fetch_parameters(client, rest_path, ["selected", "scrollx"], rest_payload=deck)
     deck_body = _extract_body(deck)
     return _json_response(
         {
@@ -2154,53 +2201,33 @@ async def monitor_decks(deck_indices_json: str) -> str:
     for deck_index in deck_indices:
         rest_path = f"/composition/decks/{deck_index}"
         deck = await client.request("GET", rest_path)
+        params = await _fetch_parameters(client, rest_path, ["selected", "scrollx"], rest_payload=deck)
         decks.append(
             {
                 "deck_index": deck_index,
                 "deck": deck,
-                "selected": await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="selected"),
-                "scrollx": await _resolved_get_or_error(client, rest_path=rest_path, parameter_suffix="scrollx"),
+                "selected": params["selected"],
+                "scrollx": params["scrollx"],
             }
         )
     return _json_response({"decks": decks})
 
 
 @mcp.tool()
-async def subscribe_decks(deck_indices_json: str) -> str:
+async def subscribe_decks(deck_indices_json: str, duration_s: float = 2.0) -> str:
     deck_indices = _parse_json_list(deck_indices_json, field_name="deck_indices_json")
-    results: list[dict[str, Any]] = []
-    client = _client()
-    for deck_index in deck_indices:
-        rest_path = f"/composition/decks/{deck_index}"
-        for suffix in ["selected", "scrollx"]:
-            results.append(
-                await _parameter_action(
-                    client,
-                    action="subscribe",
-                    rest_path=rest_path,
-                    parameter_suffix=suffix,
-                )
-            )
-    return _json_response({"results": results})
+    targets = [
+        {"deck_index": deck_index, "rest_path": f"/composition/decks/{deck_index}", "parameter_suffix": suffix}
+        for deck_index in deck_indices
+        for suffix in ("selected", "scrollx")
+    ]
+    return _json_response(await _watch_resolved_parameters(_client(), targets, _watch_duration(duration_s)))
 
 
 @mcp.tool()
 async def unsubscribe_decks(deck_indices_json: str) -> str:
-    deck_indices = _parse_json_list(deck_indices_json, field_name="deck_indices_json")
-    results: list[dict[str, Any]] = []
-    client = _client()
-    for deck_index in deck_indices:
-        rest_path = f"/composition/decks/{deck_index}"
-        for suffix in ["selected", "scrollx"]:
-            results.append(
-                await _parameter_action(
-                    client,
-                    action="unsubscribe",
-                    rest_path=rest_path,
-                    parameter_suffix=suffix,
-                )
-            )
-    return _json_response({"results": results})
+    _parse_json_list(deck_indices_json, field_name="deck_indices_json")
+    return _json_response({"action": "unsubscribe", "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
 @mcp.tool()
@@ -2368,9 +2395,9 @@ async def set_clip_parameter(layer_index: int, clip_index: int, parameter_suffix
 
 
 @mcp.tool()
-async def subscribe_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str) -> str:
+async def subscribe_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
     aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
-    return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "subscribe", parameter_suffix, aliases=aliases)
+    return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "subscribe", parameter_suffix, aliases=aliases, duration_s=duration_s)
 
 
 @mcp.tool()
@@ -2715,33 +2742,33 @@ async def reset_output_parameter(path: str) -> str:
 
 
 @mcp.tool()
-async def subscribe_output_parameter(path: str) -> str:
-    return await _output_websocket_tool_impl("subscribe", _normalize_output_path(path))
+async def subscribe_output_parameter(path: str, duration_s: float = 2.0) -> str:
+    return await _output_watch_tool_impl(_normalize_output_path(path), duration_s)
 
 
 @mcp.tool()
 async def unsubscribe_output_parameter(path: str) -> str:
-    return await _output_websocket_tool_impl("unsubscribe", _normalize_output_path(path))
+    return _output_unsubscribe_note(_normalize_output_path(path))
 
 
 @mcp.tool()
-async def subscribe_output_screen_parameter(screen_index: int, parameter_suffix: str) -> str:
-    return await _output_websocket_tool_impl("subscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix))
+async def subscribe_output_screen_parameter(screen_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
+    return await _output_watch_tool_impl(_join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix), duration_s)
 
 
 @mcp.tool()
 async def unsubscribe_output_screen_parameter(screen_index: int, parameter_suffix: str) -> str:
-    return await _output_websocket_tool_impl("unsubscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix))
+    return _output_unsubscribe_note(_join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix))
 
 
 @mcp.tool()
-async def subscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
-    return await _output_websocket_tool_impl("subscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix))
+async def subscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
+    return await _output_watch_tool_impl(_join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix), duration_s)
 
 
 @mcp.tool()
 async def unsubscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
-    return await _output_websocket_tool_impl("unsubscribe", _join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix))
+    return _output_unsubscribe_note(_join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix))
 
 
 @mcp.tool()

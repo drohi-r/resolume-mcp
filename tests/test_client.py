@@ -1,7 +1,17 @@
+import json
+
+import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from resolume_mcp.client import ResolumeClient, build_osc_message, join_url, normalize_api_path
+from resolume_mcp.client import (
+    ResolumeClient,
+    ResolumeConnectionError,
+    build_osc_message,
+    join_url,
+    message_matches_parameter,
+    normalize_api_path,
+)
 from resolume_mcp.config import ResolumeConfig
 
 
@@ -130,3 +140,131 @@ async def test_request_handles_invalid_json_body():
     assert result["ok"] is False
     assert result["status_code"] == 500
     assert result["body"] == "Internal Server Error"
+
+
+class _FakeWebSocket:
+    """Replays queued server messages; raises TimeoutError once drained so waits end immediately."""
+
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.sent = []
+
+    async def recv(self):
+        if not self.messages:
+            raise TimeoutError
+        return self.messages.pop(0)
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+
+def _patch_websocket(fake):
+    connection = MagicMock()
+    connection.__aenter__ = AsyncMock(return_value=fake)
+    connection.__aexit__ = AsyncMock(return_value=False)
+    return patch("resolume_mcp.client.websockets.connect", return_value=connection)
+
+
+BOOTSTRAP = ['{"layers": []}', '{"type": "sources_update"}', '{"type": "effects_update"}']
+
+
+@pytest.mark.asyncio
+async def test_websocket_get_skips_unrelated_messages_and_omits_bootstrap():
+    fake = _FakeWebSocket(
+        BOOTSTRAP
+        + [
+            '{"type": "parameter_update", "id": 999, "value": 1}',
+            '{"type": "parameter_get", "id": 2002, "path": "/parameter/by-id/2002", "value": 0.5}',
+        ]
+    )
+    with _patch_websocket(fake) as connect:
+        result = await ResolumeClient(ResolumeConfig()).websocket_action("get", "/parameter/by-id/2002")
+
+    assert result["response"]["value"] == 0.5
+    assert result["reply_timed_out"] is False
+    assert result["skipped_message_count"] == 1
+    assert result["bootstrap_message_count"] == 3
+    assert "bootstrap" not in result
+    assert connect.call_args.kwargs["max_size"] is None
+
+
+@pytest.mark.asyncio
+async def test_websocket_get_times_out_instead_of_hanging():
+    fake = _FakeWebSocket(BOOTSTRAP + ['{"type": "parameter_update", "id": 999}'])
+    with _patch_websocket(fake):
+        result = await ResolumeClient(ResolumeConfig()).websocket_action("get", "/parameter/by-id/2002", reply_timeout_s=0.1)
+
+    assert result["response"] is None
+    assert result["reply_timed_out"] is True
+    assert result["skipped_message_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_get_matches_error_reply_by_path():
+    fake = _FakeWebSocket(BOOTSTRAP + ['{"path": "/composition/tempocontroller/tempo", "error": "Invalid parameter path"}'])
+    with _patch_websocket(fake):
+        result = await ResolumeClient(ResolumeConfig()).websocket_action("get", "/composition/tempocontroller/tempo")
+
+    assert result["response"]["error"] == "Invalid parameter path"
+
+
+@pytest.mark.asyncio
+async def test_websocket_set_is_fire_and_forget():
+    fake = _FakeWebSocket(BOOTSTRAP + ['{"leftover": true}'])
+    with _patch_websocket(fake):
+        result = await ResolumeClient(ResolumeConfig()).websocket_action("set", "/parameter/by-id/2002", value=0.5)
+
+    assert fake.sent == [{"action": "set", "parameter": "/parameter/by-id/2002", "value": 0.5}]
+    assert result["response"] is None
+    assert "reply_timed_out" not in result
+    assert fake.messages == ['{"leftover": true}']
+
+
+@pytest.mark.asyncio
+async def test_websocket_watch_collects_updates_then_unsubscribes():
+    fake = _FakeWebSocket(
+        BOOTSTRAP
+        + [
+            '{"type": "parameter_subscribed", "id": 2002, "value": 0.5}',
+            '{"type": "parameter_update", "id": 3003, "value": 0.1}',
+            '{"type": "parameter_update", "id": 2002, "value": 0.7}',
+            '{"type": "composition_update"}',
+        ]
+    )
+    with _patch_websocket(fake):
+        result = await ResolumeClient(ResolumeConfig()).websocket_watch(
+            ["/parameter/by-id/2002", "/parameter/by-id/3003", "/parameter/by-id/2002"], duration_s=0.5
+        )
+
+    assert result["parameters"] == ["/parameter/by-id/2002", "/parameter/by-id/3003"]
+    assert [m["value"] for m in result["updates"]["/parameter/by-id/2002"]] == [0.5, 0.7]
+    assert result["update_count"] == 3
+    assert result["unmatched_message_count"] == 1
+    assert [m["action"] for m in fake.sent] == ["subscribe", "subscribe", "unsubscribe", "unsubscribe"]
+
+
+@pytest.mark.asyncio
+async def test_websocket_connection_failure_is_actionable():
+    with patch("resolume_mcp.client.websockets.connect", side_effect=ConnectionRefusedError("refused")):
+        with pytest.raises(ResolumeConnectionError, match="Could not reach Resolume at ws://127.0.0.1:8080/api/v1"):
+            await ResolumeClient(ResolumeConfig()).websocket_action("get", "/parameter/by-id/1")
+
+
+@pytest.mark.asyncio
+async def test_request_connection_failure_is_actionable():
+    async_client = MagicMock()
+    async_client.request = AsyncMock(side_effect=httpx.ConnectError("All connection attempts failed"))
+    async_client.__aenter__ = AsyncMock(return_value=async_client)
+    async_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("resolume_mcp.client.httpx.AsyncClient", return_value=async_client):
+        with pytest.raises(ResolumeConnectionError, match="web server enabled"):
+            await ResolumeClient(ResolumeConfig()).request("GET", "/product")
+
+
+def test_message_matches_parameter():
+    assert message_matches_parameter({"path": "/a/b"}, "/a/b")
+    assert message_matches_parameter({"id": 12}, "/parameter/by-id/12")
+    assert not message_matches_parameter({"id": 13}, "/parameter/by-id/12")
+    assert not message_matches_parameter({"id": 12}, "/a/b")
+    assert not message_matches_parameter("text", "/a/b")
