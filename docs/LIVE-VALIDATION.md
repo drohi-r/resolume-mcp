@@ -48,11 +48,11 @@ Scope note:
 ## Important websocket behavior
 
 - On connect, Resolume sends an initial bootstrap stream before action-specific responses.
-- The client now drains that bootstrap before waiting for the action response.
+- The client drains that bootstrap before sending and reports only `bootstrap_message_count`; the bootstrap is no longer embedded in tool results.
 - Parameter websocket actions are valid against `/parameter/by-id/{id}`.
 - Using websocket `get` or `subscribe` directly on paths like `/composition/tempocontroller/tempo` returned:
   - `{"path":"...","error":"Invalid parameter path"}`
-- The named composition, layer, clip, and deck parameter helpers now resolve IDs from the REST payload first, then use `/parameter/by-id/{id}` for websocket actions.
+- The named composition, layer, clip, and deck parameter helpers resolve IDs from the REST payload first. Reads return the value already in that payload (no websocket call); sets use `/parameter/by-id/{id}` over websocket and then verify by reading the value back over REST.
 
 ## Important action-path behavior
 

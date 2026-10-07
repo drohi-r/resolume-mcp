@@ -2267,3 +2267,21 @@ async def test_websocket_subscribe_watches_and_unsubscribe_is_a_noop(mock_client
     payload = json.loads(await websocket_unsubscribe("/parameter/by-id/5"))
     assert payload["response"] is None
     mock_client_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_every_tool_is_described_and_annotated():
+    import inspect
+
+    from resolume_mcp import server
+
+    tools = await mcp.list_tools()
+    assert tools
+    for tool in tools:
+        assert tool.description, f"{tool.name} has no description"
+        assert tool.annotations is not None, f"{tool.name} has no annotations"
+        gated = "confirm_destructive" in inspect.signature(getattr(server, tool.name)).parameters
+        if gated:
+            assert tool.annotations.destructiveHint is True, f"{tool.name} is gated but not marked destructive"
+        if tool.annotations.readOnlyHint:
+            assert not gated, f"{tool.name} is read-only but gated"

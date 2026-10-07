@@ -170,6 +170,15 @@ The server includes 7 operator skills — structured workflows for common live-s
 - **Advanced Output XML writes**: atomic (temp file + rename) to prevent corruption
 - **Polling loops**: crash-resilient — return last known state if Resolume becomes unreachable
 
+## How tools report results
+
+- Every tool has a description and MCP annotations (`readOnlyHint` / `destructiveHint`), so clients can auto-approve reads and warn before destructive calls.
+- Parameter reads come from the REST payload, one request per layer/clip/deck. WebSocket results report `bootstrap_message_count` instead of embedding Resolume's startup state.
+- Named `set_*` tools verify by reading the value back over REST: `value_before`, `value_after`, `verified`.
+- `subscribe_*` tools watch for `duration_s` seconds (max 30) on one connection and return the updates received. `unsubscribe_*` tools are no-ops, because subscriptions end when the call returns.
+- WebSocket `get` waits at most 2 s for the matching reply (`reply_timed_out` says if none came); other actions are fire-and-forget.
+- If Resolume is unreachable, the error names the URL and what to check.
+
 ## Development
 
 ```bash

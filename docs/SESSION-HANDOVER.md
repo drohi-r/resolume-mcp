@@ -6,9 +6,9 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
 
 ## Current state
 
-- Repo path: `~/Projects/resolume-mcp`
+- Repo path: wherever this repo is cloned (e.g. `C:\Users\<user>\resolume-mcp` on the Windows media servers)
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `149 passed`
+- Validation status: `227 passed` (2026-10-08, Windows)
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
 - Intended deployment environment: Windows media servers
@@ -60,7 +60,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
   - layer prep and batch layer prep
   - playback prep helper
   - playback monitor helper
-  - playback subscribe/unsubscribe helper
+  - playback watch helper (`subscribe_playback_state` collects updates for `duration_s`; unsubscribe is a no-op)
   - add/duplicate helpers for layers, columns, groups, and decks
   - deck open/close helpers
   - group add-layer, move-layer, and clear helpers
@@ -81,7 +81,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
   - deck prep helper
   - batch deck prep helper
   - deck monitor helper
-  - deck subscribe/unsubscribe helpers
+  - deck watch helpers (`subscribe_decks` collects updates for `duration_s`; unsubscribe is a no-op)
   - deck select helper
   - validated live deck schema currently exposes selection and scroll state, not deck transport fields
 
@@ -91,7 +91,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
   - slice snapshot
   - output parameter helpers
   - screen and slice parameter helpers
-  - screen/slice subscribe helpers
+  - screen/slice watch helpers
   - transform helpers
   - corner helper
   - batch screen/slice update helpers
@@ -128,7 +128,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
 1. Re-validate all Advanced Output wrappers against a build/control path that actually exposes Advanced Output.
 2. Decide whether to add controlled XML write/import helpers after confirming safe reload behavior.
 3. Add startup examples for the eventual MCP host/client integration path.
-4. Consider trimming bootstrap-heavy websocket output in named tools if operator-facing responses need to be cleaner.
+4. Live-check on Windows: WebSocket `set` delivery when the connection closes right after sending, the reply/update message format used for matching, and the `select_clip`/`select_layer`/`select_column` paths.
 5. Re-validate build-dependent selected-group and active-clip paths on a Windows target or a different Resolume build.
 
 ## Notes
