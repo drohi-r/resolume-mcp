@@ -50,12 +50,13 @@ class ResolumeConfig:
         scheme = "wss" if self.use_https else "ws"
         return f"{scheme}://{self.host}:{self.http_port}/api/v1"
 
-    def check_host_allowed(self) -> None:
+    def check_host_allowed(self, host: str | None = None) -> None:
+        target = self.host if host is None else host
         if "*" in self.allowed_hosts:
             return
-        if self.host not in self.allowed_hosts:
+        if target not in self.allowed_hosts:
             raise ValueError(
-                f"Host {self.host!r} is not in RESOLUME_ALLOWED_HOSTS. "
+                f"Host {target!r} is not in RESOLUME_ALLOWED_HOSTS. "
                 f"Allowed: {', '.join(sorted(self.allowed_hosts))}. "
                 f"Set RESOLUME_ALLOWED_HOSTS=* to allow any host."
             )

@@ -1592,7 +1592,13 @@ def test_restore_advanced_output_preferences(tmp_path: Path):
             slices_xml_path=str(current_slices),
         ),
     ):
-        payload = json.loads(restore_advanced_output_preferences(str(source_advanced_output), backup_dir=str(tmp_path / "backups")))
+        payload = json.loads(
+            restore_advanced_output_preferences(
+                str(source_advanced_output),
+                backup_dir=str(tmp_path / "backups"),
+                confirm_destructive=True,
+            )
+        )
     assert Path(payload["backups"]["advanced_output_xml"]["backup"]).exists()
     assert "Slice Restored" in current_advanced_output.read_text(encoding="utf-8")
 

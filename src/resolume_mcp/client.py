@@ -126,6 +126,8 @@ class ResolumeClient:
         host: str | None = None,
         port: int | None = None,
     ) -> dict[str, Any]:
+        if host:
+            self.config.check_host_allowed(host)
         target_host = host or self.config.host
         target_port = port or self.config.osc_port
         packet = build_osc_message(address, values)

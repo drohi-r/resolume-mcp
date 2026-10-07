@@ -22,7 +22,7 @@ Built for live production. Pairs with [grandMA2 MCP](https://github.com/drohi-r/
 | **Advanced Output** | Screen and slice management via both REST API and XML inspection. Backup, diff, rename, reroute, warp alignment |
 | **Playback & monitoring** | Transport control, parameter subscriptions, state polling, show-readiness audits |
 | **Effects** | Add, remove, move, rename effects across composition, layer, group, and clip scopes |
-| **Safety** | 16 destructive operations gated behind `confirm_destructive=True`. Atomic XML writes. Crash-resilient polling |
+| **Safety** | 20 destructive operations gated behind `confirm_destructive=True`, plus path-based gating on the generic REST/WebSocket/OSC tools. Host allowlist. Atomic XML writes |
 
 ## Quick start
 
@@ -70,7 +70,7 @@ graph TD
     E["Resolume Arena / Avenue<br/>HTTP API on port 8080"]
 
     F["Advanced Output Engine<br/>XML inspection · atomic writes · backup"] -.-> A
-    G["Safety Gate<br/>16 destructive ops gated behind confirm"] -.-> A
+    G["Safety Gate<br/>20 destructive ops + generic-tool path gate"] -.-> A
 
     style A fill:#1a1a2e,stroke:#9B59FF,color:#fff
     style B fill:#1a1a2e,stroke:#9B59FF,color:#fff
@@ -164,8 +164,9 @@ The server includes 7 operator skills — structured workflows for common live-s
 ## Safety model
 
 - **Read operations** (snapshots, audits, parameter gets): always safe, no confirmation needed
-- **Destructive operations** (clear, disconnect, remove): require `confirm_destructive=True`
-- **Host allowlisting**: only `127.0.0.1`, `localhost`, and `::1` are permitted by default. Add LAN hosts explicitly via `RESOLUME_ALLOWED_HOSTS`. Set `*` to allow any host.
+- **Destructive operations** (clear, disconnect, remove, new/open composition, close deck, Advanced Output restore): require `confirm_destructive=True`
+- **Generic tools** (`rest_*`, `websocket_*`, `set_param`, `trigger_param`, `trigger_deck_action`, `osc_send`): require `confirm_destructive=True` when the call matches a known-destructive pattern — REST `DELETE`, WebSocket `remove`, paths ending in `clear`/`clearclips`/`disconnect-all`/`disconnectall`, `/composition/new`, `/composition/open`, deck `close`, or `connect` with `false`. This is best-effort: a `set` on `/parameter/by-id/{id}` cannot be classified.
+- **Host allowlisting**: only `127.0.0.1`, `localhost`, and `::1` are permitted by default. Add LAN hosts explicitly via `RESOLUME_ALLOWED_HOSTS`. Set `*` to allow any host. The `osc_send` host override is checked against the same allowlist.
 - **Advanced Output XML writes**: atomic (temp file + rename) to prevent corruption
 - **Polling loops**: crash-resilient — return last known state if Resolume becomes unreachable
 
