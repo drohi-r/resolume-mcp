@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -136,8 +136,24 @@ def _normalize_media_uri(value: str) -> str:
         return f"file:///{drive}:{quote(remainder)}"
     parsed = urlparse(candidate)
     if parsed.scheme:
-        return candidate
+        return _encode_resolume_uri(candidate)
     return Path(candidate).expanduser().resolve().as_uri()
+
+
+_RESOLUME_URI_PREFIXES = ("source:///", "effect:///")
+
+
+def _encode_resolume_uri(uri: str) -> str:
+    """Percent-encode the path segments of a source:/// or effect:/// URI.
+
+    Arena only accepts the encoded display name (e.g. 'DeckLink%208K%20Pro%20%281%29'); raw spaces
+    or parentheses fail with 400. Already-encoded segments are left as they are.
+    """
+    for prefix in _RESOLUME_URI_PREFIXES:
+        if uri.lower().startswith(prefix):
+            segments = uri[len(prefix):].split("/")
+            return prefix + "/".join(quote(unquote(segment), safe="") for segment in segments)
+    return uri
 
 
 def _normalize_media_scalar_or_field(value: Any) -> str:
@@ -325,12 +341,26 @@ async def _parameter_action(
     if action == "subscribe":
         response = await client.websocket_watch([reference["parameter_path"]], duration_s=_watch_duration(duration_s))
         return {"request": request, "response": response, "parameter": node}
+    if action == "set":
+        _validate_choice_value(node, value, reference["resolved_suffix"])
     response = await client.websocket_action(action, reference["parameter_path"], value=value)
     result: dict[str, Any] = {"request": request, "response": response, "parameter": node}
     if action == "set":
         result["value_before"] = node.get("value")
-        result.update(await _verify_parameter_value(client, rest_path, reference["resolved_suffix"], value))
+        verification = await _verify_parameter_value(client, rest_path, reference["resolved_suffix"], value)
+        # Arena can drop a set that lands right after a clip load; one resend fixes that. A playhead
+        # position keeps moving while playing, so a mismatch there is expected and not retried.
+        if not verification["verified"] and "verify_error" not in verification and not reference["resolved_suffix"].endswith("position"):
+            await client.websocket_action(action, reference["parameter_path"], value=value)
+            verification = {**await _verify_parameter_value(client, rest_path, reference["resolved_suffix"], value), "retried": True}
+        result.update(verification)
     return result
+
+
+def _validate_choice_value(node: dict[str, Any], value: Any, suffix: str) -> None:
+    options = node.get("options")
+    if isinstance(options, list) and options and value not in options:
+        raise ValueError(f"'{suffix}' is a choice parameter; value must be one of: {', '.join(repr(option) for option in options)}.")
 
 
 async def _websocket_get_or_error(client: ResolumeClient, parameter: str) -> dict[str, Any]:
@@ -401,6 +431,36 @@ async def _clip_connection_state(client: ResolumeClient, layer_index: int, clip_
         if isinstance(value, str):
             return value
     return None
+
+
+def _is_connected(state: Any) -> bool:
+    return isinstance(state, str) and state.startswith("Connected")
+
+
+async def _disconnect_clip(client: ResolumeClient, layer_index: int, clip_index: int) -> dict[str, Any]:
+    before_state = await _clip_connection_state(client, layer_index, clip_index)
+    response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
+    after_state = await _clip_connection_state(client, layer_index, clip_index)
+    method = "connect=false"
+    fallback_response = None
+    if _is_connected(after_state):
+        # Arena 7 answers 204 to connect=false but keeps the clip playing. A layer only plays one clip,
+        # so clearing the layer stops exactly this clip; the media stays in its slot.
+        fallback_response = await client.request("POST", f"/composition/layers/{layer_index}/clear")
+        after_state = await _clip_connection_state(client, layer_index, clip_index)
+        method = "layer clear"
+    disconnected = isinstance(after_state, str) and not _is_connected(after_state)
+    return {
+        "layer_index": layer_index,
+        "clip_index": clip_index,
+        "response": response,
+        "fallback_response": fallback_response,
+        "method": method,
+        "before_state": before_state,
+        "after_state": after_state,
+        "disconnected": disconnected,
+        "note": None if disconnected else "Clip is still connected (or its state could not be read) after the disconnect request.",
+    }
 
 
 async def _clip_material_state(client: ResolumeClient, layer_index: int, clip_index: int) -> dict[str, Any]:
@@ -555,6 +615,50 @@ def _without_collections(payload: Any, keys: tuple[str, ...]) -> Any:
 _COMPOSITION_COLLECTIONS = ("layers", "columns", "layergroups", "decks")
 
 
+def _param_value(node: Any, *path: str) -> Any:
+    """Value of a nested REST parameter node ({"value": ...}), or the raw entry if it is not a node."""
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node.get("value") if isinstance(node, dict) else node
+
+
+def _clip_summary(clip_index: int, clip: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "clip_index": clip_index,
+        "name": _param_value(clip, "name"),
+        "connected": _param_value(clip, "connected"),
+        "transport_type": _param_value(clip, "transporttype"),
+    }
+
+
+def _loaded_clips(layer: dict[str, Any]) -> list[dict[str, Any]]:
+    clips = layer.get("clips") if isinstance(layer.get("clips"), list) else []
+    return [
+        _clip_summary(index, clip)
+        for index, clip in enumerate(clips, start=1)
+        if isinstance(clip, dict) and _param_value(clip, "connected") not in (None, "Empty")
+    ]
+
+
+def _layer_summary(layer_index: int, layer: dict[str, Any]) -> dict[str, Any]:
+    clips = layer.get("clips") if isinstance(layer.get("clips"), list) else []
+    return {
+        "layer_index": layer_index,
+        "name": _param_value(layer, "name"),
+        "bypassed": _param_value(layer, "bypassed"),
+        "opacity": _param_value(layer, "video", "opacity"),
+        "clip_slots": len(clips),
+    }
+
+
+def _with_missing_endpoint_note(result: dict[str, Any], hint: str) -> dict[str, Any]:
+    if result.get("status_code") == 404:
+        result["note"] = f"This Arena build has no {result.get('path')} endpoint. {hint}"
+    return result
+
+
 def _advanced_output_preferences() -> AdvancedOutputPreferences:
     return AdvancedOutputPreferences.load(load_config().advanced_output_xml_path)
 
@@ -664,7 +768,7 @@ mcp = FastMCP(
         "'transport/position', 'tempocontroller/tempo'. "
         "Destructive tools only return a confirmation request until called again with confirm_destructive=True; "
         "confirm with the operator first during a live show. "
-        "Start with get_composition_overview or audit_show_readiness; prefer named tools over the generic "
+        "Start with get_composition_summary (compact) or wait_for_resolume after launching Arena; prefer named tools over the generic "
         "rest_*/websocket_*/osc_send tools. Advanced Output REST/WebSocket tools are experimental; "
         "the *_xml tools work on the local AdvancedOutput.xml."
     ),
@@ -709,7 +813,7 @@ async def rest_request(
 
 @mcp.tool(annotations=_READ_ONLY)
 async def rest_get(path: str, query_json: str = "") -> str:
-    """GET any REST path under /api/v1, e.g. '/composition' or '/composition/layers/1'."""
+    """GET any REST path under /api/v1, e.g. '/composition/layers/1'. Arena does not serve sub-parameter paths like '.../clips/1/connected' (404); use get_*_parameter or '/parameter/by-id/{id}'."""
     params = _parse_json(query_json)
     result = await _client().request("GET", path, params=params)
     return _json_response(result)
@@ -834,7 +938,7 @@ def osc_send(
     port: int = 0,
     confirm_destructive: bool = False,
 ) -> str:
-    """Send one OSC message (values_json is a JSON array). host override must be in RESOLUME_ALLOWED_HOSTS. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
+    """Send one OSC message (values_json is a JSON array). Resolume OSC triggers such as /clear fire on a 0->1 change, so send 0 then 1 to fire again. host override must be in RESOLUME_ALLOWED_HOSTS. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     values = _parse_json(values_json)
     if values is None:
         values = []
@@ -848,7 +952,7 @@ def osc_send(
 
 @mcp.tool(annotations=_READ_ONLY)
 async def get_composition() -> str:
-    """Full raw composition JSON (layers, clips, columns, decks). Large on real shows; prefer get_composition_overview or the list_* tools."""
+    """Full raw composition JSON. Very large on real shows (hundreds of KB); prefer get_composition_summary."""
     result = await _client().request("GET", "/composition")
     return _json_response(result)
 
@@ -860,7 +964,7 @@ async def new_composition(body_json: str = "", confirm_destructive: bool = False
         return _confirmation_required("new_composition", "This will replace the ENTIRE current composition with a new empty one. Re-call with confirm_destructive=True to proceed.")
     body = _optional_json_object(body_json, field_name="body_json")
     result = await _client().request("POST", "/composition/new", body=body)
-    return _json_response(result)
+    return _json_response(_with_missing_endpoint_note(result, "Use File > New in Arena."))
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -870,15 +974,15 @@ async def open_composition(body_json: str = "", confirm_destructive: bool = Fals
         return _confirmation_required("open_composition", "This will replace the ENTIRE current composition with the opened one. Re-call with confirm_destructive=True to proceed.")
     body = _optional_json_object(body_json, field_name="body_json")
     result = await _client().request("POST", "/composition/open", body=body)
-    return _json_response(result)
+    return _json_response(_with_missing_endpoint_note(result, "Open the composition from Arena (File > Open)."))
 
 
 @mcp.tool(annotations=_WRITE)
 async def save_composition(body_json: str = "") -> str:
-    """Save the current composition; body_json is passed to /composition/save."""
+    """Save the current composition via /composition/save. Arena 7.23 has no such endpoint (404); the result then says to save in Arena with Ctrl+S."""
     body = _optional_json_object(body_json, field_name="body_json")
     result = await _client().request("POST", "/composition/save", body=body)
-    return _json_response(result)
+    return _json_response(_with_missing_endpoint_note(result, "Save from Arena itself (Ctrl+S or File > Save)."))
 
 
 @mcp.tool(annotations=_WRITE)
@@ -915,7 +1019,7 @@ async def unsubscribe_composition_parameter(parameter_suffix: str) -> str:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def get_node(path: str, query_json: str = "") -> str:
-    """GET any REST path (alias of rest_get)."""
+    """GET any REST path (alias of rest_get). Sub-parameter paths like '.../connected' 404; use get_*_parameter instead."""
     params = _parse_json(query_json)
     result = await _client().request("GET", path, params=params)
     return _json_response(result)
@@ -1242,7 +1346,7 @@ def diff_advanced_output_preferences(other_xml_path: str) -> str:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def list_layers() -> str:
-    """List layers (1-based order), falling back to the embedded composition list when the direct endpoint 404s."""
+    """Full raw layer list, clips included (large on real shows; prefer get_composition_summary). Falls back to the embedded composition list when the direct endpoint 404s."""
     client = _client()
     result = await _get_embedded_collection(
         client,
@@ -1484,7 +1588,7 @@ async def audit_all_output_screens() -> str:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def get_layer(layer_index: int) -> str:
-    """Raw REST payload for one layer (1-based layer_index), including its clips."""
+    """Raw REST payload for one layer, all clips included (can be hundreds of KB); prefer get_layer_summary."""
     result = await _client().request("GET", f"/composition/layers/{layer_index}")
     return _json_response(result)
 
@@ -1507,7 +1611,7 @@ async def add_layer(body_json: str = "") -> str:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def get_composition_overview() -> str:
-    """One-read overview: composition settings plus layers, columns, groups and decks lists."""
+    """Raw composition settings plus the full layers, columns, groups and decks lists in one read. Large on real shows; prefer get_composition_summary."""
     composition = await _client().request("GET", "/composition")
     return _json_response(
         {
@@ -1518,6 +1622,76 @@ async def get_composition_overview() -> str:
             "decks": _embedded_collection(composition, "decks"),
         }
     )
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def get_composition_summary() -> str:
+    """Compact show state from one read: composition name and BPM, every layer (name, bypassed, opacity, loaded clip count, playing clips), columns, decks and groups. Start here; it stays small on large shows."""
+    composition = await _client().request("GET", "/composition")
+    body = _extract_body(composition)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "status_code": composition.get("status_code"), "body": body})
+
+    def entries(key: str) -> list[dict[str, Any]]:
+        value = body.get(key)
+        return [entry for entry in value if isinstance(entry, dict)] if isinstance(value, list) else []
+
+    layers = []
+    for index, layer in enumerate(entries("layers"), start=1):
+        loaded = _loaded_clips(layer)
+        layers.append(
+            {
+                **_layer_summary(index, layer),
+                "loaded_clip_count": len(loaded),
+                "playing": [clip for clip in loaded if _is_connected(clip["connected"])],
+            }
+        )
+    return _json_response(
+        {
+            "ok": True,
+            "name": _param_value(body, "name"),
+            "bpm": _param_value(body, "tempocontroller", "tempo"),
+            "layer_count": len(layers),
+            "layers": layers,
+            "columns": [{"column_index": i, "name": _param_value(c, "name")} for i, c in enumerate(entries("columns"), start=1)],
+            "decks": [{"deck_index": i, "name": _param_value(d, "name"), "selected": _param_value(d, "selected")} for i, d in enumerate(entries("decks"), start=1)],
+            "groups": [{"group_index": i, "name": _param_value(g, "name")} for i, g in enumerate(entries("layergroups"), start=1)],
+        }
+    )
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def get_layer_summary(layer_index: int) -> str:
+    """Compact view of one layer: name, bypassed, opacity and every loaded clip slot (index, name, connected state, transport type). Much smaller than get_layer."""
+    layer = await _client().request("GET", f"/composition/layers/{layer_index}")
+    body = _extract_body(layer)
+    if not isinstance(body, dict):
+        return _json_response({"ok": False, "status_code": layer.get("status_code"), "body": body})
+    return _json_response({"ok": True, **_layer_summary(layer_index, body), "clips": _loaded_clips(body)})
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def wait_for_resolume(timeout_s: float = 60.0, interval_s: float = 1.0) -> str:
+    """Poll Resolume's REST API until it answers (e.g. right after launching Arena). Returns ready, how long it took and product info. timeout_s is capped at 300."""
+    if not 0 < timeout_s <= 300 or interval_s <= 0:
+        raise ValueError("timeout_s must be in (0, 300] and interval_s must be positive.")
+    client = _client()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    attempts = 0
+    last_error: str | None = None
+    while True:
+        attempts += 1
+        try:
+            product = await client.request("GET", "/product", timeout_s=max(interval_s, 1.0))
+            if product.get("ok"):
+                return _json_response({"ready": True, "waited_s": round(loop.time() - started, 2), "attempts": attempts, "product": product.get("body")})
+            last_error = f"HTTP {product.get('status_code')}"
+        except Exception as exc:
+            last_error = str(exc)
+        if loop.time() - started + interval_s > timeout_s:
+            return _json_response({"ready": False, "waited_s": round(loop.time() - started, 2), "attempts": attempts, "last_error": last_error})
+        await asyncio.sleep(interval_s)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -1822,7 +1996,7 @@ async def get_active_clip(layer_index: int) -> str:
 
 @mcp.tool(annotations=_WRITE)
 async def open_clip(layer_index: int, clip_index: int, body_json: str = "") -> str:
-    """Load media into a clip slot (replaces what is there). body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
+    """Load media or a source into a clip slot (replaces what is there). Sources use their display name, e.g. 'source:///video/DeckLink 8K Pro (1) - SDI 1' (encoded automatically), not the idstring. body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
     parsed = _parse_json(body_json)
     body = _normalize_media_scalar_or_field(parsed) if parsed is not None else None
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/open", body=body)
@@ -1888,7 +2062,7 @@ async def list_available_effects() -> str:
 
 @mcp.tool(annotations=_READ_ONLY)
 async def list_available_sources() -> str:
-    """List generator/source URIs Resolume offers."""
+    """List generator and capture sources. Load one with open_clip using 'source:///video/<display name>'."""
     result = await _client().request("GET", "/sources")
     return _json_response(result)
 
@@ -2031,36 +2205,20 @@ async def trigger_clips(layer_index: int, clip_indices_json: str) -> str:
 
 @mcp.tool(annotations=_DESTRUCTIVE)
 async def disconnect_clips(layer_index: int, clip_indices_json: str, confirm_destructive: bool = False) -> str:
-    """Disconnect several clips on one layer; clip_indices_json is a JSON array. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Stop several clips on one layer (same fallback as disconnect_clip); clip_indices_json is a JSON array. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
         return _confirmation_required("disconnect_clips", f"This will disconnect the specified clips on layer {layer_index}. Re-call with confirm_destructive=True to proceed.")
     clip_indices = _parse_json_list(clip_indices_json, field_name="clip_indices_json")
-    results: list[dict[str, Any]] = []
     client = _client()
-    for clip_index in clip_indices:
-        before_state = await _clip_connection_state(client, layer_index, clip_index)
-        response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
-        after_state = await _clip_connection_state(client, layer_index, clip_index)
-        disconnected = after_state in {"Disconnected", "Empty"}
-        results.append(
-            {
-                "layer_index": layer_index,
-                "clip_index": clip_index,
-                "response": response,
-                "before_state": before_state,
-                "after_state": after_state,
-                "disconnected": disconnected,
-                "note": None if disconnected else "Clip remained connected after disconnect request on this Resolume build.",
-            }
-        )
+    results = [await _disconnect_clip(client, layer_index, clip_index) for clip_index in clip_indices]
     return _json_response({"results": results})
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
 async def clear_layers(layer_indices_json: str, confirm_destructive: bool = False) -> str:
-    """Clear several layers; layer_indices_json is a JSON array. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Clear several layers: stops what is playing on the layer (disconnects its active clip); the clips stay in their slots. layer_indices_json is a JSON array. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
-        return _confirmation_required("clear_layers", "This will clear the specified layers, removing all their content. Re-call with confirm_destructive=True to proceed.")
+        return _confirmation_required("clear_layers", "This will stop playback on the specified layers (their playing clips are disconnected; clips stay in their slots). Re-call with confirm_destructive=True to proceed.")
     layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
     results: list[dict[str, Any]] = []
     client = _client()
@@ -2570,25 +2728,10 @@ async def trigger_selected_clip() -> str:
 
 @mcp.tool(annotations=_DESTRUCTIVE)
 async def disconnect_clip(layer_index: int, clip_index: int, confirm_destructive: bool = False) -> str:
-    """Disconnect a clip and report before/after state. On the validated build Resolume answered 204 but the clip stayed connected. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Stop a clip and report before/after state. Arena 7 ignores connect=false, so if the clip is still connected this clears its layer instead (only that clip stops; media stays in the slot). Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
         return _confirmation_required("disconnect_clip", f"This will disconnect clip {clip_index} on layer {layer_index}. Re-call with confirm_destructive=True to proceed.")
-    client = _client()
-    before_state = await _clip_connection_state(client, layer_index, clip_index)
-    response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect", body=False)
-    after_state = await _clip_connection_state(client, layer_index, clip_index)
-    disconnected = after_state in {"Disconnected", "Empty"}
-    return _json_response(
-        {
-            "layer_index": layer_index,
-            "clip_index": clip_index,
-            "response": response,
-            "before_state": before_state,
-            "after_state": after_state,
-            "disconnected": disconnected,
-            "note": None if disconnected else "Clip remained connected after disconnect request on this Resolume build.",
-        }
-    )
+    return _json_response(await _disconnect_clip(_client(), layer_index, clip_index))
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -2740,18 +2883,18 @@ async def select_clip(layer_index: int, clip_index: int) -> str:
 
 @mcp.tool(annotations=_DESTRUCTIVE)
 async def clear_layer(layer_index: int, confirm_destructive: bool = False) -> str:
-    """Clear a layer, removing its content. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Clear a layer: stops what is playing on the layer (disconnects its active clip); the clips stay in their slots. Use clear_layer_clips to remove the clips themselves. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
-        return _confirmation_required("clear_layer", f"This will clear layer {layer_index}, removing all its content. Re-call with confirm_destructive=True to proceed.")
+        return _confirmation_required("clear_layer", f"This will stop playback on layer {layer_index} (its playing clip is disconnected; clips stay in their slots). Re-call with confirm_destructive=True to proceed.")
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clear")
     return _json_response(result)
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
 async def clear_selected_layer(confirm_destructive: bool = False) -> str:
-    """Clear the selected layer. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Clear the selected layer: stops what is playing on the layer (disconnects its active clip); the clips stay in their slots. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
-        return _confirmation_required("clear_selected_layer", "This will clear the selected layer, removing all its content. Re-call with confirm_destructive=True to proceed.")
+        return _confirmation_required("clear_selected_layer", "This will stop playback on the selected layer (its playing clip is disconnected; clips stay in their slots). Re-call with confirm_destructive=True to proceed.")
     result = await _client().request("POST", "/composition/layers/selected/clear")
     return _json_response(result)
 
@@ -3171,7 +3314,7 @@ async def add_effect(
     group_index: int | None = None,
     clip_index: int | None = None,
 ) -> str:
-    """Add an effect by URI, e.g. 'effect:///video/Blow'; effect_kind is audio or video. scope: composition, layer, selected-layer, group, selected-group, clip or selected-clip (pass layer_index/group_index/clip_index as the scope needs)."""
+    """Add an effect by URI using its display name, e.g. 'effect:///video/AR IMAG' (encoded automatically); effect_kind is audio or video. scope: composition, layer, selected-layer, group, selected-group, clip or selected-clip (pass layer_index/group_index/clip_index as the scope needs)."""
     base = _effect_scope_path(scope, index=group_index, layer_index=layer_index, clip_index=clip_index)
     kind = _effect_kind_path(effect_kind)
     path = f"{base}/effects/{kind}/add"
@@ -3180,7 +3323,7 @@ async def add_effect(
     effect_spec = effect_spec.strip()
     if not effect_spec:
         raise ValueError("effect_spec is required and must be a non-empty effect URI like effect:///video/Blow.")
-    result = await _client().request("POST", path, body=effect_spec)
+    result = await _client().request("POST", path, body=_encode_resolume_uri(effect_spec))
     return _json_response(result)
 
 

@@ -252,12 +252,16 @@ def windows_advanced_output_path_candidates(
 ) -> dict[str, Any]:
     resolved_username = username.strip() or os.getenv("USERNAME", "").strip() or "<USERNAME>"
     base = f"{drive}\\Users\\{resolved_username}\\Documents\\Resolume Arena"
+    onedrive_base = f"{drive}\\Users\\{resolved_username}\\OneDrive\\Documents\\Resolume Arena"
     return {
         "documents_root": base,
         "advanced_output_xml_path": f"{base}\\Preferences\\AdvancedOutput.xml",
         "slices_xml_path": f"{base}\\Preferences\\slices.xml",
+        "onedrive_documents_root": onedrive_base,
+        "onedrive_advanced_output_xml_path": f"{onedrive_base}\\Preferences\\AdvancedOutput.xml",
         "notes": [
             "These are Windows candidate paths only.",
+            "When OneDrive backs up Documents, Resolume's folder lives under OneDrive\\Documents; the server detects this automatically on the machine it runs on.",
             "They should be validated on the actual media server and then set through RESOLUME_DOCUMENTS_ROOT, RESOLUME_ADVANCED_OUTPUT_XML, and RESOLUME_SLICES_XML.",
         ],
     }

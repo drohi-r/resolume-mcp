@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -38,8 +39,8 @@ def test_websocket_url_uses_api_v1():
 
 def test_config_exposes_advanced_output_xml_paths():
     config = ResolumeConfig()
-    assert config.advanced_output_xml_path.endswith("/Documents/Resolume Arena/Preferences/AdvancedOutput.xml")
-    assert config.slices_xml_path.endswith("/Documents/Resolume Arena/Preferences/slices.xml")
+    assert Path(config.advanced_output_xml_path).parts[-3:] == ("Resolume Arena", "Preferences", "AdvancedOutput.xml")
+    assert Path(config.slices_xml_path).parts[-3:] == ("Resolume Arena", "Preferences", "slices.xml")
 
 
 @pytest.mark.asyncio

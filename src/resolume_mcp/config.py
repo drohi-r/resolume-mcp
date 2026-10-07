@@ -1,9 +1,35 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import sys
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
 
 _DEFAULT_ALLOWED_HOSTS = "127.0.0.1,localhost,::1"
+_FOLDERID_DOCUMENTS = uuid.UUID("FDD39AD0-238F-46AF-ADB4-6C85480369C7")
+
+
+def _windows_documents_dir() -> Path | None:
+    """The real Documents folder on Windows, which OneDrive often redirects away from ~/Documents."""
+    try:
+        import ctypes
+
+        folder_id = (ctypes.c_char * 16).from_buffer_copy(_FOLDERID_DOCUMENTS.bytes_le)
+        path_ptr = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(path_ptr)) != 0:
+            return None
+        try:
+            return Path(path_ptr.value) if path_ptr.value else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(path_ptr)
+    except Exception:
+        return None
+
+
+def default_documents_root() -> str:
+    documents = _windows_documents_dir() if sys.platform == "win32" else None
+    return str((documents or Path.home() / "Documents") / "Resolume Arena")
 
 
 def _parse_port(env_name: str, default: str) -> int:
@@ -36,9 +62,17 @@ class ResolumeConfig:
     osc_port: int = 7000
     allowed_hosts: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
     use_https: bool = False
-    documents_root: str = os.path.expanduser("~/Documents/Resolume Arena")
-    advanced_output_xml_path: str = os.path.expanduser("~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml")
-    slices_xml_path: str = os.path.expanduser("~/Documents/Resolume Arena/Preferences/slices.xml")
+    documents_root: str = field(default_factory=default_documents_root)
+    # Empty means "derive from documents_root".
+    advanced_output_xml_path: str = ""
+    slices_xml_path: str = ""
+
+    def __post_init__(self) -> None:
+        preferences = Path(self.documents_root).expanduser() / "Preferences"
+        if not self.advanced_output_xml_path:
+            object.__setattr__(self, "advanced_output_xml_path", str(preferences / "AdvancedOutput.xml"))
+        if not self.slices_xml_path:
+            object.__setattr__(self, "slices_xml_path", str(preferences / "slices.xml"))
 
     @property
     def http_base_url(self) -> str:
@@ -69,15 +103,9 @@ def load_config() -> ResolumeConfig:
         osc_port=_parse_port("RESOLUME_OSC_PORT", "7000"),
         allowed_hosts=_parse_allowed_hosts(os.getenv("RESOLUME_ALLOWED_HOSTS", _DEFAULT_ALLOWED_HOSTS)),
         use_https=_parse_bool("RESOLUME_USE_HTTPS", "0"),
-        documents_root=os.getenv("RESOLUME_DOCUMENTS_ROOT", os.path.expanduser("~/Documents/Resolume Arena")),
-        advanced_output_xml_path=os.getenv(
-            "RESOLUME_ADVANCED_OUTPUT_XML",
-            os.path.expanduser("~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml"),
-        ),
-        slices_xml_path=os.getenv(
-            "RESOLUME_SLICES_XML",
-            os.path.expanduser("~/Documents/Resolume Arena/Preferences/slices.xml"),
-        ),
+        documents_root=os.path.expanduser(os.getenv("RESOLUME_DOCUMENTS_ROOT", "") or default_documents_root()),
+        advanced_output_xml_path=os.path.expanduser(os.getenv("RESOLUME_ADVANCED_OUTPUT_XML", "")),
+        slices_xml_path=os.path.expanduser(os.getenv("RESOLUME_SLICES_XML", "")),
     )
     config.check_host_allowed()
     return config

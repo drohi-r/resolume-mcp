@@ -8,7 +8,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
 
 - Repo path: wherever this repo is cloned (e.g. `C:\Users\<user>\resolume-mcp` on the Windows media servers)
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `227 passed` (2026-10-08, Windows)
+- Validation status: `246 passed` (2026-10-08, Windows)
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
 - Intended deployment environment: Windows media servers
@@ -128,8 +128,17 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
 1. Re-validate all Advanced Output wrappers against a build/control path that actually exposes Advanced Output.
 2. Decide whether to add controlled XML write/import helpers after confirming safe reload behavior.
 3. Add startup examples for the eventual MCP host/client integration path.
-4. Live-check on Windows: WebSocket `set` delivery when the connection closes right after sending, the reply/update message format used for matching, and the `select_clip`/`select_layer`/`select_column` paths.
+4. Live-check on Windows: WebSocket `set` delivery when the connection closes right after sending, the reply/update message format used for matching, and the `select_clip`/`select_layer`/`select_column` paths. Run `uv run python scripts/live_probe.py --write-checks` against a test composition.
 5. Re-validate build-dependent selected-group and active-clip paths on a Windows target or a different Resolume build.
+
+### Gaps found in the AvoidRafa show sessions (Arena 7.23.2, Sep–Oct 2026)
+
+Those sessions bypassed the MCP for most Resolume work (about 96 direct REST calls and 83 `.avc` edits against 32 MCP calls). Already fixed on `feat/mcp-improvements`: oversized reads, the 1 MiB WebSocket limit, unclear connection errors, URI encoding, choice-parameter validation and set retry, the `disconnect_clip` fallback, OneDrive Documents detection, save/open 404 guidance, and `wait_for_resolume`. Still open, roughly by impact:
+
+6. Offline composition (`.avc`) editing with Arena closed: per-clip SMPTE offset (not exposed over REST), moving or reordering layers and clips, removing layers or columns. The show needed custom scripts and several Arena restarts for this.
+7. Advanced Output presets (`Presets\Advanced Output\*.xml`): create screens and slices, set NDI or DMX output devices, re-point slice inputs after a layer reorder.
+8. Clip setup helpers: transport type (Timeline / BPM Sync / SMPTE n), play mode, column-trigger behavior, resize, plus column add/rename and composition resolution.
+9. Parameter access by id over REST (`/parameter/by-id/{id}`); the show scripts used it directly.
 
 ## Notes
 
