@@ -79,3 +79,43 @@ def test_load_config_rejects_host_outside_allowlist():
     with patch.dict(os.environ, {"RESOLUME_HOST": "10.0.0.1", "RESOLUME_ALLOWED_HOSTS": "127.0.0.1"}):
         with pytest.raises(ValueError, match="RESOLUME_ALLOWED_HOSTS"):
             load_config()
+
+
+def test_xml_paths_follow_documents_root(tmp_path):
+    with patch.dict(os.environ, {"RESOLUME_DOCUMENTS_ROOT": str(tmp_path)}):
+        config = load_config()
+    assert config.documents_root == str(tmp_path)
+    assert config.advanced_output_xml_path == str(tmp_path / "Preferences" / "AdvancedOutput.xml")
+    assert config.slices_xml_path == str(tmp_path / "Preferences" / "slices.xml")
+
+
+def test_explicit_xml_paths_override_documents_root(tmp_path):
+    with patch.dict(
+        os.environ,
+        {
+            "RESOLUME_DOCUMENTS_ROOT": str(tmp_path),
+            "RESOLUME_ADVANCED_OUTPUT_XML": str(tmp_path / "custom.xml"),
+            "RESOLUME_SLICES_XML": str(tmp_path / "custom_slices.xml"),
+        },
+    ):
+        config = load_config()
+    assert config.advanced_output_xml_path == str(tmp_path / "custom.xml")
+    assert config.slices_xml_path == str(tmp_path / "custom_slices.xml")
+
+
+def test_default_documents_root_uses_windows_known_folder(tmp_path):
+    from resolume_mcp import config as config_module
+
+    with patch.object(config_module.sys, "platform", "win32"), patch.object(
+        config_module, "_windows_documents_dir", return_value=tmp_path / "OneDrive" / "Documents"
+    ):
+        assert config_module.default_documents_root() == str(tmp_path / "OneDrive" / "Documents" / "Resolume Arena")
+
+
+def test_default_documents_root_falls_back_to_home_documents(tmp_path):
+    from pathlib import Path
+
+    from resolume_mcp import config as config_module
+
+    with patch.object(config_module.sys, "platform", "linux"), patch.object(config_module.Path, "home", return_value=tmp_path):
+        assert config_module.default_documents_root() == str(Path(tmp_path) / "Documents" / "Resolume Arena")
