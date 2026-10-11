@@ -7,10 +7,10 @@
 <p align="center">
   <a href="https://github.com/drohi-r/resolume-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-orange?style=for-the-badge" alt="License"></a>
   <img src="https://img.shields.io/badge/Python-3.12%2B-blue?style=for-the-badge" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/MCP_Tools-206-9B59FF?style=for-the-badge" alt="206 MCP Tools">
+  <img src="https://img.shields.io/badge/MCP_Tools-209-9B59FF?style=for-the-badge" alt="209 MCP Tools">
 </p>
 
-An MCP server for [Resolume Arena and Avenue](https://resolume.com). Exposes 206 tools covering composition control, playback, Advanced Output management, and show recovery — so AI assistants can operate Resolume via REST, WebSocket, and OSC.
+An MCP server for [Resolume Arena and Avenue](https://resolume.com). Exposes 209 tools covering composition control, playback, Advanced Output management, and show recovery — so AI assistants can operate Resolume via REST, WebSocket, and OSC.
 
 Built for live production. Pairs with [grandMA2 MCP](https://github.com/drohi-r/grandma2-mcp), [MADRIX MCP](https://github.com/drohi-r/madrix-mcp), [Companion MCP](https://github.com/drohi-r/companion-mcp), and [Beyond MCP](https://github.com/drohi-r/beyond-mcp) for full AI-driven show control.
 
@@ -22,7 +22,7 @@ Built for live production. Pairs with [grandMA2 MCP](https://github.com/drohi-r/
 | **Advanced Output** | Screen and slice management via both REST API and XML inspection. Backup, diff, rename, reroute, warp alignment |
 | **Playback & monitoring** | Transport control, parameter subscriptions, state polling, show-readiness audits |
 | **Effects** | Add, remove, move, rename effects across composition, layer, group, and clip scopes |
-| **Safety** | 16 destructive operations gated behind `confirm_destructive=True`. Atomic XML writes. Crash-resilient polling |
+| **Safety** | 20 destructive operations gated behind `confirm_destructive=True`, plus path-based gating on the generic REST/WebSocket/OSC tools. Host allowlist. Atomic XML writes |
 
 ## Quick start
 
@@ -61,7 +61,7 @@ The server reads configuration from environment variables. All have sensible def
 
 ```mermaid
 graph TD
-    A["Resolume MCP Server<br/><code>resolume_mcp</code><br/>206 tools · safety gate"] --> B
+    A["Resolume MCP Server<br/><code>resolume_mcp</code><br/>209 tools · safety gate"] --> B
     A --> C
     A --> D
     B["REST Client<br/>Composition · clips · layers · effects"] --> E
@@ -70,7 +70,7 @@ graph TD
     E["Resolume Arena / Avenue<br/>HTTP API on port 8080"]
 
     F["Advanced Output Engine<br/>XML inspection · atomic writes · backup"] -.-> A
-    G["Safety Gate<br/>16 destructive ops gated behind confirm"] -.-> A
+    G["Safety Gate<br/>20 destructive ops + generic-tool path gate"] -.-> A
 
     style A fill:#1a1a2e,stroke:#9B59FF,color:#fff
     style B fill:#1a1a2e,stroke:#9B59FF,color:#fff
@@ -164,10 +164,26 @@ The server includes 7 operator skills — structured workflows for common live-s
 ## Safety model
 
 - **Read operations** (snapshots, audits, parameter gets): always safe, no confirmation needed
-- **Destructive operations** (clear, disconnect, remove): require `confirm_destructive=True`
-- **Host allowlisting**: only `127.0.0.1`, `localhost`, and `::1` are permitted by default. Add LAN hosts explicitly via `RESOLUME_ALLOWED_HOSTS`. Set `*` to allow any host.
+- **Destructive operations** (clear, disconnect, remove, new/open composition, close deck, Advanced Output restore): require `confirm_destructive=True`
+- **Generic tools** (`rest_*`, `websocket_*`, `set_param`, `trigger_param`, `trigger_deck_action`, `osc_send`): require `confirm_destructive=True` when the call matches a known-destructive pattern — REST `DELETE`, WebSocket `remove`, paths ending in `clear`/`clearclips`/`disconnect-all`/`disconnectall`, `/composition/new`, `/composition/open`, deck `close`, or `connect` with `false`. This is best-effort: a `set` on `/parameter/by-id/{id}` cannot be classified.
+- **Host allowlisting**: only `127.0.0.1`, `localhost`, and `::1` are permitted by default. Add LAN hosts explicitly via `RESOLUME_ALLOWED_HOSTS`. Set `*` to allow any host. The `osc_send` host override is checked against the same allowlist.
 - **Advanced Output XML writes**: atomic (temp file + rename) to prevent corruption
 - **Polling loops**: crash-resilient — return last known state if Resolume becomes unreachable
+
+## How tools report results
+
+- Every tool has a description and MCP annotations (`readOnlyHint` / `destructiveHint`), so clients can auto-approve reads and warn before destructive calls.
+- `get_composition_summary` and `get_layer_summary` give compact state (names, bypass, opacity, loaded and playing clips). The raw `get_composition`, `list_layers` and `get_layer` payloads run to hundreds of KB on real shows.
+- `wait_for_resolume` polls until Arena's REST API answers after launch.
+- `source:///` and `effect:///` URIs are percent-encoded automatically, so display names with spaces or parentheses work.
+- Choice parameters are checked against their options before sending; a set that does not stick is resent once.
+- `disconnect_clip` falls back to clearing the clip's layer when Arena ignores `connect=false` (only that clip stops; media stays).
+- The Documents folder is found through Windows (including OneDrive redirection); `RESOLUME_DOCUMENTS_ROOT` also moves the default XML paths.
+- Parameter reads come from the REST payload, one request per layer/clip/deck. WebSocket results report `bootstrap_message_count` instead of embedding Resolume's startup state.
+- Named `set_*` tools verify by reading the value back over REST: `value_before`, `value_after`, `verified`.
+- `subscribe_*` tools watch for `duration_s` seconds (max 30) on one connection and return the updates received. `unsubscribe_*` tools are no-ops, because subscriptions end when the call returns.
+- WebSocket `get` waits at most 2 s for the matching reply (`reply_timed_out` says if none came); other actions are fire-and-forget.
+- If Resolume is unreachable, the error names the URL and what to check.
 
 ## Development
 

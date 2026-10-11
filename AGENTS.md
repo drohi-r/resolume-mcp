@@ -6,7 +6,7 @@
 - Domain: Resolume Arena / Avenue control
 - Protocols: REST, WebSocket, OSC
 - Main entrypoint:
-- `uv run python -m resolume_mcp.server`
+- `uv run python -m resolume_mcp`
 
 ## Core Rules
 
@@ -20,7 +20,7 @@
 ```bash
 uv sync
 uv run python -m pytest -v
-uv run python -m resolume_mcp.server
+uv run python -m resolume_mcp
 ```
 
 ## Key Paths
