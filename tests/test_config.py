@@ -119,3 +119,36 @@ def test_default_documents_root_falls_back_to_home_documents(tmp_path):
 
     with patch.object(config_module.sys, "platform", "linux"), patch.object(config_module.Path, "home", return_value=tmp_path):
         assert config_module.default_documents_root() == str(Path(tmp_path) / "Documents" / "Resolume Arena")
+
+
+def test_experimental_tools_disabled_by_default():
+    from resolume_mcp.config import experimental_tools_enabled
+
+    with patch.dict(os.environ, {}):
+        os.environ.pop("RESOLUME_EXPERIMENTAL_TOOLS", None)
+        assert experimental_tools_enabled() is False
+
+
+def test_experimental_tools_env_flag():
+    from resolume_mcp.config import experimental_tools_enabled
+
+    with patch.dict(os.environ, {"RESOLUME_EXPERIMENTAL_TOOLS": "1"}):
+        assert experimental_tools_enabled() is True
+
+
+def test_audit_log_defaults_under_documents_root(tmp_path):
+    with patch.dict(os.environ, {"RESOLUME_DOCUMENTS_ROOT": str(tmp_path)}):
+        os.environ.pop("RESOLUME_AUDIT_LOG", None)
+        config = load_config()
+    assert config.audit_log_path == str(tmp_path / "Logs" / "resolume-mcp-audit.jsonl")
+
+
+def test_audit_log_path_override(tmp_path):
+    with patch.dict(os.environ, {"RESOLUME_AUDIT_LOG": str(tmp_path / "show.jsonl")}):
+        assert load_config().audit_log_path == str(tmp_path / "show.jsonl")
+
+
+@pytest.mark.parametrize("raw", ["off", "0", "false", "none", "OFF", " no "])
+def test_audit_log_can_be_disabled(raw):
+    with patch.dict(os.environ, {"RESOLUME_AUDIT_LOG": raw}):
+        assert load_config().audit_log_path == ""

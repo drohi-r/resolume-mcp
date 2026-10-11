@@ -7,6 +7,10 @@ description: Use when Resolume is not behaving correctly during setup or live pl
 
 Use this skill when the operator needs a fast diagnosis rather than an immediate blind write.
 
+## Requirements
+
+Start with `get_composition_summary` for a compact view of every layer and its playing clips. The output-side tools (`audit_all_output_screens`, `audit_output_screen`, `get_output_screen_snapshot`, `get_output_slice_snapshot`, `prepare_output_screen`) need Advanced Output over REST/WebSocket, which Arena 7.23 does not expose; they are registered only with `RESOLUME_EXPERIMENTAL_TOOLS=1`. Without it, `audit_show_readiness` reports composition findings only, and output state comes from `get_advanced_output_preferences_summary`. `disconnect_clip`, `disconnect_selected_clip` and `disconnect_column` clear the layer when Arena ignores `connect=false`; read their `method` and `disconnected` fields.
+
 ## Workflow
 
 1. Start with the broadest useful audit.

@@ -7,6 +7,10 @@ description: Use when setting up, normalizing, or auditing Resolume Advanced Out
 
 Use this skill when the task is about getting Resolume Advanced Output into a usable live state quickly and safely.
 
+## Requirements
+
+The tools below drive Advanced Output over REST/WebSocket, which Arena 7.23 does not expose (every path returns `404` on the validated macOS and Windows builds). They are registered only when the server runs with `RESOLUME_EXPERIMENTAL_TOOLS=1`. Without it, work on the local XML instead: `get_advanced_output_preferences_summary`, `get_advanced_output_screen_xml` and `get_advanced_output_slice_xml` to inspect, `backup_advanced_output_preferences` first, then `rename_advanced_output_screen`, `rename_advanced_output_slice`, `set_advanced_output_screen_output_device_xml` and `set_advanced_output_slice_input_rect_xml`. Resolume may need a restart to pick the file up.
+
 ## Workflow
 
 1. Inspect first.
