@@ -7,6 +7,10 @@ description: Use when adapting Resolume output routing quickly for festivals, gu
 
 Use this skill for fast routing changes when the venue or output layout is not what the show expected.
 
+## Requirements
+
+The tools below drive Advanced Output over REST/WebSocket, which Arena 7.23 does not expose (every path returns `404` on the validated macOS and Windows builds). They are registered only when the server runs with `RESOLUME_EXPERIMENTAL_TOOLS=1`. Without it, work on the local XML instead: `get_advanced_output_preferences_summary`, `get_advanced_output_screen_xml` and `get_advanced_output_slice_xml` to inspect, `backup_advanced_output_preferences` first, then `set_advanced_output_slice_input_rect_xml` to re-point a slice and `set_advanced_output_screen_output_device_xml` to change its output device. Resolume may need a restart to pick the file up.
+
 ## Workflow
 
 1. Read the current state.

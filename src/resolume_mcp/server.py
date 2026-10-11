@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
+import inspect
 import json
+import logging
 import math
 import posixpath
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse, urlsplit
@@ -26,8 +31,9 @@ from .advanced_output_xml import (
     set_advanced_output_slice_vertices,
     windows_advanced_output_path_candidates,
 )
+from .audit import record_call, summarize_result
 from .client import ResolumeClient
-from .config import load_config
+from .config import experimental_tools_enabled, load_config
 
 
 def _client() -> ResolumeClient:
@@ -481,6 +487,109 @@ async def _disconnect_clip(client: ResolumeClient, layer_index: int, clip_index:
     }
 
 
+def _selected_clip_state(payload: Any) -> tuple[Any, str | None]:
+    """(clip id, connected state) from a /composition/clips/selected payload."""
+    body = _extract_body(payload)
+    if not isinstance(body, dict):
+        return None, None
+    state = _param_value(body, "connected")
+    return body.get("id"), state if isinstance(state, str) else None
+
+
+def _layer_index_of_clip(composition: Any, clip_id: int) -> int | None:
+    """1-based index of the layer holding the clip with this id, from a /composition payload."""
+    body = _extract_body(composition)
+    layers = body.get("layers") if isinstance(body, dict) else None
+    for layer_index, layer in enumerate(layers if isinstance(layers, list) else [], start=1):
+        clips = layer.get("clips") if isinstance(layer, dict) else None
+        for clip in clips if isinstance(clips, list) else []:
+            if isinstance(clip, dict) and clip.get("id") == clip_id:
+                return layer_index
+    return None
+
+
+async def _disconnect_selected_clip(client: ResolumeClient) -> dict[str, Any]:
+    clip_id, before_state = _selected_clip_state(await client.request("GET", "/composition/clips/selected"))
+    result: dict[str, Any] = {
+        "clip_id": clip_id,
+        "layer_index": None,
+        "response": None,
+        "fallback_response": None,
+        "method": "none",
+        "before_state": before_state,
+        "after_state": before_state,
+    }
+    if isinstance(before_state, str) and not _is_connected(before_state):
+        return {**result, "disconnected": True, "note": "Selected clip was not playing; nothing was sent."}
+    result["response"] = await client.request("POST", "/composition/clips/selected/connect", body=False)
+    _, after_state = _selected_clip_state(await client.request("GET", "/composition/clips/selected"))
+    result["method"] = "connect=false"
+    note = None
+    if _is_connected(before_state) and _is_connected(after_state):
+        # Same fallback as disconnect_clip: Arena 7 answers 204 and keeps playing. Clearing the clip's layer stops
+        # exactly this clip (a layer plays one clip at a time); the media stays in its slot.
+        layer_index = _layer_index_of_clip(await client.request("GET", "/composition"), clip_id) if isinstance(clip_id, int) else None
+        if layer_index is None:
+            note = "Clip is still connected and its layer could not be found in the composition, so no layer was cleared."
+        else:
+            result["layer_index"] = layer_index
+            result["fallback_response"] = await client.request("POST", f"/composition/layers/{layer_index}/clear")
+            _, after_state = _selected_clip_state(await client.request("GET", "/composition/clips/selected"))
+            result["method"] = "layer clear"
+    disconnected = isinstance(after_state, str) and not _is_connected(after_state)
+    if note is None and not disconnected:
+        note = "Selected clip is still connected (or its state could not be read) after the disconnect request."
+    return {**result, "after_state": after_state, "disconnected": disconnected, "note": note}
+
+
+def _layers_playing_column(composition: Any, column_index: int) -> list[int] | None:
+    """1-based indices of the layers whose connected clip sits in this column, or None when the /composition payload is unreadable."""
+    body = _extract_body(composition)
+    layers = body.get("layers") if isinstance(body, dict) else None
+    if not isinstance(layers, list):
+        return None
+    playing: list[int] = []
+    for layer_index, layer in enumerate(layers, start=1):
+        clips = layer.get("clips") if isinstance(layer, dict) else None
+        if isinstance(clips, list) and 1 <= column_index <= len(clips) and _is_connected(_param_value(clips[column_index - 1], "connected")):
+            playing.append(layer_index)
+    return playing
+
+
+async def _disconnect_column(client: ResolumeClient, column_index: int) -> dict[str, Any]:
+    before = _layers_playing_column(await client.request("GET", "/composition"), column_index)
+    result: dict[str, Any] = {
+        "column_index": column_index,
+        "playing_layers_before": before,
+        "response": None,
+        "method": "none",
+        "cleared_layers": [],
+        "fallback_responses": [],
+        "playing_layers_after": [],
+    }
+    if before == []:
+        return {**result, "disconnected": True, "note": "No layer was playing a clip from this column; nothing was sent."}
+    result["response"] = await client.request("POST", f"/composition/columns/{column_index}/connect", body=False)
+    still_playing = _layers_playing_column(await client.request("GET", "/composition"), column_index)
+    result["method"] = "connect=false"
+    if still_playing:
+        # Arena 7 answers 204 to connect=false and keeps playing. Clearing a layer stops exactly its playing clip,
+        # so only the layers still on this column are cleared; their media stays in the slots.
+        for layer_index in still_playing:
+            result["fallback_responses"].append(await client.request("POST", f"/composition/layers/{layer_index}/clear"))
+            result["cleared_layers"].append(layer_index)
+        result["method"] = "layer clear"
+        still_playing = _layers_playing_column(await client.request("GET", "/composition"), column_index)
+    disconnected = still_playing == []
+    if disconnected:
+        note = None
+    elif still_playing is None:
+        note = "The composition state could not be read after the disconnect request, so the result is unknown."
+    else:
+        note = "Some layers are still playing a clip from this column after the disconnect request."
+    return {**result, "playing_layers_after": still_playing, "disconnected": disconnected, "note": note}
+
+
 async def _clip_material_state(client: ResolumeClient, layer_index: int, clip_index: int) -> dict[str, Any]:
     payload = await client.request("GET", f"/composition/layers/{layer_index}/clips/{clip_index}")
     return _clip_material_state_from_payload(payload)
@@ -787,13 +896,109 @@ mcp = FastMCP(
         "Destructive tools only return a confirmation request until called again with confirm_destructive=True; "
         "confirm with the operator first during a live show. "
         "Start with get_composition_summary (compact) or wait_for_resolume after launching Arena; prefer named tools over the generic "
-        "rest_*/websocket_*/osc_send tools. Advanced Output REST/WebSocket tools are experimental; "
-        "the *_xml tools work on the local AdvancedOutput.xml."
+        "rest_*/websocket_*/osc_send tools. The *_xml tools work on the local AdvancedOutput.xml; Advanced Output over "
+        "REST/WebSocket returns 404 on Arena 7.23, so those tools (plus the unsubscribe_* no-ops and deck prep placeholders) "
+        "are only registered with RESOLUME_EXPERIMENTAL_TOOLS=1. Every write or destructive call is appended to a JSONL "
+        "audit log (path in get_server_config; RESOLUME_AUDIT_LOG=off disables it)."
     ),
 )
 
+_EXPERIMENTAL_TOOLS_ENABLED = experimental_tools_enabled()
+_HIDDEN_EXPERIMENTAL_TOOLS: set[str] = set()
+_audit_depth: contextvars.ContextVar[int] = contextvars.ContextVar("resolume_mcp_audit_depth", default=0)
+_log = logging.getLogger(__name__)
 
-@mcp.tool(annotations=_READ_ONLY)
+
+def _audit_arguments(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+        return dict(bound.arguments)
+    except TypeError:
+        return {"args": list(args), "kwargs": dict(kwargs)}
+
+
+def _audit(tool_name: str, arguments: dict[str, Any], started: float, result: Any = None, error: BaseException | None = None) -> None:
+    """Append one audit record for a write/destructive call; a failure here is logged and never reaches the caller."""
+    try:
+        config = load_config()
+        if error is not None:
+            outcome = "error"
+        elif (summarize_result(result) or {}).get("requires_confirmation") is True:
+            outcome = "confirmation_required"
+        else:
+            outcome = "ok"
+        record_call(
+            config.audit_log_path,
+            tool=tool_name,
+            arguments=arguments,
+            outcome=outcome,
+            target=config.http_base_url,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            result=result,
+            error=None if error is None else (str(error) or type(error).__name__),
+        )
+    except Exception as exc:
+        _log.warning("Audit record for %s was not written: %s", tool_name, exc)
+
+
+def _audited(fn: Any) -> Any:
+    """Wrap a tool so each top-level call is audited; tools calling other tools are recorded once."""
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            if _audit_depth.get():
+                return await fn(*args, **kwargs)
+            token = _audit_depth.set(1)
+            started = time.monotonic()
+            try:
+                result = await fn(*args, **kwargs)
+            except BaseException as exc:
+                _audit(fn.__name__, _audit_arguments(fn, args, kwargs), started, error=exc)
+                raise
+            finally:
+                _audit_depth.reset(token)
+            _audit(fn.__name__, _audit_arguments(fn, args, kwargs), started, result=result)
+            return result
+
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if _audit_depth.get():
+            return fn(*args, **kwargs)
+        token = _audit_depth.set(1)
+        started = time.monotonic()
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:
+            _audit(fn.__name__, _audit_arguments(fn, args, kwargs), started, error=exc)
+            raise
+        finally:
+            _audit_depth.reset(token)
+        _audit(fn.__name__, _audit_arguments(fn, args, kwargs), started, result=result)
+        return result
+
+    return wrapper
+
+
+def _tool(annotations: ToolAnnotations, *, experimental: bool = False) -> Any:
+    """Register a tool. Write and destructive tools are audited; experimental tools (404 or no-op on the validated
+    Arena builds) are only registered when RESOLUME_EXPERIMENTAL_TOOLS=1, but stay importable for direct use.
+    """
+
+    def decorator(fn: Any) -> Any:
+        wrapped = fn if annotations.readOnlyHint else _audited(fn)
+        if experimental and not _EXPERIMENTAL_TOOLS_ENABLED:
+            _HIDDEN_EXPERIMENTAL_TOOLS.add(fn.__name__)
+            return wrapped
+        return mcp.tool(annotations=annotations)(wrapped)
+
+    return decorator
+
+
+@_tool(_READ_ONLY)
 def get_server_config() -> str:
     """Show the Resolume host, ports, URLs and Advanced Output XML paths this server is configured for."""
     config = load_config()
@@ -808,11 +1013,14 @@ def get_server_config() -> str:
             "documents_root": config.documents_root,
             "advanced_output_xml_path": config.advanced_output_xml_path,
             "slices_xml_path": config.slices_xml_path,
+            "audit_log_path": config.audit_log_path,
+            "experimental_tools": _EXPERIMENTAL_TOOLS_ENABLED,
+            "hidden_experimental_tool_count": len(_HIDDEN_EXPERIMENTAL_TOOLS),
         }
     )
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def rest_request(
     method: str,
     path: str,
@@ -829,7 +1037,7 @@ async def rest_request(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def rest_get(path: str, query_json: str = "") -> str:
     """GET any REST path under /api/v1, e.g. '/composition/layers/1'. Arena does not serve sub-parameter paths like '.../clips/1/connected' (404); use get_*_parameter or '/parameter/by-id/{id}'."""
     params = _parse_json(query_json)
@@ -837,7 +1045,7 @@ async def rest_get(path: str, query_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def rest_post(path: str, body_json: str = "", confirm_destructive: bool = False) -> str:
     """POST to any REST path; body_json is JSON, or a JSON string sent as text/plain. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     body = _parse_json(body_json)
@@ -847,7 +1055,7 @@ async def rest_post(path: str, body_json: str = "", confirm_destructive: bool = 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def rest_put(path: str, body_json: str = "", confirm_destructive: bool = False) -> str:
     """PUT to any REST path with a JSON body. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     body = _parse_json(body_json)
@@ -857,7 +1065,7 @@ async def rest_put(path: str, body_json: str = "", confirm_destructive: bool = F
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def rest_delete(path: str, body_json: str = "", confirm_destructive: bool = False) -> str:
     """DELETE any REST path. Always destructive: requires confirm_destructive=True."""
     body = _parse_json(body_json)
@@ -867,7 +1075,7 @@ async def rest_delete(path: str, body_json: str = "", confirm_destructive: bool 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def websocket_action(
     action: str,
     parameter: str,
@@ -882,14 +1090,14 @@ async def websocket_action(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def websocket_get(parameter: str) -> str:
     """Read a parameter over WebSocket, e.g. '/parameter/by-id/123'. Waits up to 2 s for the matching reply (reply_timed_out tells you if none came)."""
     result = await _client().websocket_action("get", parameter)
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def websocket_set(parameter: str, value_json: str, confirm_destructive: bool = False) -> str:
     """Set a parameter over WebSocket (fire-and-forget), e.g. '/parameter/by-id/123' with value_json '0.5'. Prefer the named set_* tools, which verify. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     value = _parse_json(value_json)
@@ -899,7 +1107,7 @@ async def websocket_set(parameter: str, value_json: str, confirm_destructive: bo
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def websocket_trigger(parameter: str, confirm_destructive: bool = False) -> str:
     """Fire a WebSocket trigger on a parameter or action path. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     if gate := _generic_gate("websocket_trigger", "trigger", parameter, None, confirm_destructive):
@@ -908,27 +1116,27 @@ async def websocket_trigger(parameter: str, confirm_destructive: bool = False) -
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def websocket_reset(parameter: str) -> str:
     """Reset a parameter to its default over WebSocket."""
     result = await _client().websocket_action("reset", parameter)
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def websocket_subscribe(parameter: str, duration_s: float = 2.0) -> str:
     """Watch a raw parameter path. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received."""
     result = await _client().websocket_watch([parameter], duration_s=_watch_duration(duration_s))
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def websocket_unsubscribe(parameter: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     return _json_response({"action": "unsubscribe", "parameter": parameter, "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def websocket_post(parameter: str, value_json: str = "", confirm_destructive: bool = False) -> str:
     """Send a WebSocket 'post' action to a path. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     value = _parse_json(value_json)
@@ -938,7 +1146,7 @@ async def websocket_post(parameter: str, value_json: str = "", confirm_destructi
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def websocket_remove(parameter: str, value_json: str = "", confirm_destructive: bool = False) -> str:
     """Send a WebSocket 'remove' action. Always destructive: requires confirm_destructive=True."""
     value = _parse_json(value_json)
@@ -948,7 +1156,7 @@ async def websocket_remove(parameter: str, value_json: str = "", confirm_destruc
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 def osc_send(
     address: str,
     values_json: str = "[]",
@@ -968,14 +1176,14 @@ def osc_send(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_composition() -> str:
     """Full raw composition JSON. Very large on real shows (hundreds of KB); prefer get_composition_summary."""
     result = await _client().request("GET", "/composition")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def new_composition(body_json: str = "", confirm_destructive: bool = False) -> str:
     """Replace the current composition with a new empty one. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -985,7 +1193,7 @@ async def new_composition(body_json: str = "", confirm_destructive: bool = False
     return _json_response(_with_missing_endpoint_note(result, "Use File > New in Arena."))
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def open_composition(body_json: str = "", confirm_destructive: bool = False) -> str:
     """Open a composition, replacing the current one; body_json is passed to /composition/open. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -995,7 +1203,7 @@ async def open_composition(body_json: str = "", confirm_destructive: bool = Fals
     return _json_response(_with_missing_endpoint_note(result, "Open the composition from Arena (File > Open)."))
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def save_composition(body_json: str = "") -> str:
     """Save the current composition via /composition/save. Arena 7.23 has no such endpoint (404); the result then says to save in Arena with Ctrl+S."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1003,7 +1211,7 @@ async def save_composition(body_json: str = "") -> str:
     return _json_response(_with_missing_endpoint_note(result, "Save from Arena itself (Ctrl+S or File > Save)."))
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def grow_composition_to(body_json: str) -> str:
     """Grow the composition; body_json is passed to /composition/grow-to."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1011,31 +1219,31 @@ async def grow_composition_to(body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_composition_parameter(parameter_suffix: str) -> str:
     """Read a composition parameter, e.g. 'tempocontroller/tempo'. parameter_suffix is the path inside the scope's REST payload, e.g. 'video/opacity' or 'bypassed'."""
     return await _parameter_tool_impl("/composition", "get", parameter_suffix)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_composition_parameter(parameter_suffix: str, value_json: str) -> str:
     """Set a composition parameter; value_json is a JSON value like 128 or true. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     return await _parameter_tool_impl("/composition", "set", parameter_suffix, value=_parse_json(value_json))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def subscribe_composition_parameter(parameter_suffix: str, duration_s: float = 2.0) -> str:
     """Watch a composition parameter. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received."""
     return await _parameter_tool_impl("/composition", "subscribe", parameter_suffix, duration_s=duration_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_composition_parameter(parameter_suffix: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     return await _parameter_tool_impl("/composition", "unsubscribe", parameter_suffix)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_node(path: str, query_json: str = "") -> str:
     """GET any REST path (alias of rest_get). Sub-parameter paths like '.../connected' 404; use get_*_parameter instead."""
     params = _parse_json(query_json)
@@ -1043,7 +1251,7 @@ async def get_node(path: str, query_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def disconnect_all(confirm_destructive: bool = False) -> str:
     """Disconnect every clip in the composition (output goes dark). Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -1052,21 +1260,21 @@ async def disconnect_all(confirm_destructive: bool = False) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_advanced_output_tree(path: str = "/advancedoutput") -> str:
     """GET a path under /advancedoutput. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().request("GET", _normalize_output_path(path))
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def get_advanced_output_preferences_summary() -> str:
     """Summarize screens, slices and soft-edge settings from the local AdvancedOutput.xml."""
     prefs = _advanced_output_preferences()
     return _json_response(prefs.summary())
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def get_advanced_output_screen_xml(screen_index: int) -> str:
     """One screen from AdvancedOutput.xml (0-based screen_index)."""
     summary = _advanced_output_preferences().summary()
@@ -1076,7 +1284,7 @@ def get_advanced_output_screen_xml(screen_index: int) -> str:
     return _json_response(screens[screen_index])
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def get_advanced_output_slice_xml(screen_index: int, slice_index: int) -> str:
     """One slice from AdvancedOutput.xml (0-based screen_index and slice_index)."""
     summary = _advanced_output_preferences().summary()
@@ -1089,14 +1297,14 @@ def get_advanced_output_slice_xml(screen_index: int, slice_index: int) -> str:
     return _json_response(slices[slice_index])
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def get_slices_inspector_summary() -> str:
     """Summarize the local slices.xml (slice inspector state)."""
     prefs = _slice_inspector_preferences()
     return _json_response(prefs.summary())
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def backup_advanced_output_preferences(backup_dir: str = "") -> str:
     """Copy AdvancedOutput.xml and slices.xml into a timestamped backup (default: <documents_root>/Backups/AdvancedOutput)."""
     config = load_config()
@@ -1112,7 +1320,7 @@ def backup_advanced_output_preferences(backup_dir: str = "") -> str:
     )
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def export_advanced_output_preferences(export_dir: str = "", bundle_name: str = "") -> str:
     """Export AdvancedOutput.xml and slices.xml as a bundle without touching the live files."""
     config = load_config()
@@ -1130,13 +1338,13 @@ def export_advanced_output_preferences(export_dir: str = "", bundle_name: str = 
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def get_windows_advanced_output_path_candidates(username: str = "", drive: str = "C:") -> str:
     """Likely Windows locations of the Advanced Output XML files for a user and drive."""
     return _json_response(windows_advanced_output_path_candidates(username=username, drive=drive))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def probe_advanced_output_paths(
     documents_root: str = "",
     advanced_output_xml_path: str = "",
@@ -1168,7 +1376,7 @@ def probe_advanced_output_paths(
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def preview_restore_advanced_output_preferences(
     source_advanced_output_xml_path: str,
     source_slices_xml_path: str = "",
@@ -1185,7 +1393,7 @@ def preview_restore_advanced_output_preferences(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def rename_advanced_output_screen(screen_index: int, new_name: str, backup_dir: str = "") -> str:
     """Rename a screen in AdvancedOutput.xml. Edits the local AdvancedOutput.xml after taking a backup; Resolume may need a restart to pick it up."""
     config = load_config()
@@ -1199,7 +1407,7 @@ def rename_advanced_output_screen(screen_index: int, new_name: str, backup_dir: 
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def rename_advanced_output_slice(screen_index: int, slice_index: int, new_name: str, backup_dir: str = "") -> str:
     """Rename a slice in AdvancedOutput.xml. Edits the local AdvancedOutput.xml after taking a backup; Resolume may need a restart to pick it up."""
     config = load_config()
@@ -1214,7 +1422,7 @@ def rename_advanced_output_slice(screen_index: int, slice_index: int, new_name: 
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def set_advanced_output_soft_edge_power_xml(value: float, backup_dir: str = "") -> str:
     """Set the soft-edge power value. Edits the local AdvancedOutput.xml after taking a backup; Resolume may need a restart to pick it up."""
     config = load_config()
@@ -1227,7 +1435,7 @@ def set_advanced_output_soft_edge_power_xml(value: float, backup_dir: str = "") 
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def set_advanced_output_screen_output_device_xml(
     screen_index: int,
     name: str,
@@ -1251,7 +1459,7 @@ def set_advanced_output_screen_output_device_xml(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def set_advanced_output_slice_input_rect_xml(
     screen_index: int,
     slice_index: int,
@@ -1273,7 +1481,7 @@ def set_advanced_output_slice_input_rect_xml(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def set_advanced_output_slice_output_rect_xml(
     screen_index: int,
     slice_index: int,
@@ -1295,7 +1503,7 @@ def set_advanced_output_slice_output_rect_xml(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 def set_advanced_output_slice_homography_dst_xml(
     screen_index: int,
     slice_index: int,
@@ -1317,7 +1525,7 @@ def set_advanced_output_slice_homography_dst_xml(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 def restore_advanced_output_preferences(
     source_advanced_output_xml_path: str,
     source_slices_xml_path: str = "",
@@ -1340,7 +1548,7 @@ def restore_advanced_output_preferences(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 def diff_advanced_output_preferences(other_xml_path: str) -> str:
     """Unified diff between the live AdvancedOutput.xml and another XML file."""
     current = _advanced_output_preferences()
@@ -1362,7 +1570,7 @@ def diff_advanced_output_preferences(other_xml_path: str) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_layers() -> str:
     """Full raw layer list, clips included (large on real shows; prefer get_composition_summary). Falls back to the embedded composition list when the direct endpoint 404s."""
     client = _client()
@@ -1375,7 +1583,7 @@ async def list_layers() -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_columns() -> str:
     """List columns, falling back to the embedded composition list when the direct endpoint 404s."""
     client = _client()
@@ -1388,7 +1596,7 @@ async def list_columns() -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_groups() -> str:
     """List layer groups (REST 'layergroups'), falling back to the embedded composition list."""
     client = _client()
@@ -1401,7 +1609,7 @@ async def list_groups() -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_decks() -> str:
     """List decks from the composition payload."""
     result = await _client().request("GET", "/composition")
@@ -1410,42 +1618,42 @@ async def list_decks() -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_selected_layer() -> str:
     """Raw REST payload for the selected layer."""
     result = await _client().request("GET", "/composition/layers/selected")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_selected_group() -> str:
     """Raw REST payload for the selected layer group. Returned 404 on the validated build."""
     result = await _client().request("GET", "/composition/layergroups/selected")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_selected_clip() -> str:
     """Raw REST payload for the selected clip."""
     result = await _client().request("GET", "/composition/clips/selected")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_selected_active_clip() -> str:
     """The connected clip on the selected layer. May 404 on some builds."""
     result = await _client().request("GET", "/composition/layers/selected/clips/active")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def list_output_screens() -> str:
     """List output screens (0-based). Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().request("GET", "/advancedoutput/screens")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_overview() -> str:
     """All screens with their slices. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     client = _client()
@@ -1476,14 +1684,14 @@ async def get_output_overview() -> str:
     return _json_response({"screens": screens, "screen_snapshots": snapshots})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_screen(screen_index: int) -> str:
     """One output screen (0-based screen_index). Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().request("GET", f"/advancedoutput/screens/{screen_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_screen_snapshot(screen_index: int) -> str:
     """One screen plus its slices. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     client = _client()
@@ -1498,21 +1706,21 @@ async def get_output_screen_snapshot(screen_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def list_output_slices(screen_index: int) -> str:
     """Slices of a screen (0-based). Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().request("GET", f"/advancedoutput/screens/{screen_index}/slices")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_slice(screen_index: int, slice_index: int) -> str:
     """One slice. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().request("GET", f"/advancedoutput/screens/{screen_index}/slices/{slice_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_slice_snapshot(screen_index: int, slice_index: int) -> str:
     """One slice plus its input, opacity and bypassed values. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     client = _client()
@@ -1541,7 +1749,7 @@ async def get_output_slice_snapshot(screen_index: int, slice_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def audit_output_screen(screen_index: int) -> str:
     """Audit a screen: flags no slices, unassigned slice inputs, or disabled screen. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     client = _client()
@@ -1581,7 +1789,7 @@ async def audit_output_screen(screen_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def audit_all_output_screens() -> str:
     """audit_output_screen for every screen. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     client = _client()
@@ -1604,14 +1812,14 @@ async def audit_all_output_screens() -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_layer(layer_index: int) -> str:
     """Raw REST payload for one layer, all clips included (can be hundreds of KB); prefer get_layer_summary."""
     result = await _client().request("GET", f"/composition/layers/{layer_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def duplicate_layer(layer_index: int, body_json: str = "") -> str:
     """Duplicate a layer (1-based layer_index)."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1619,7 +1827,7 @@ async def duplicate_layer(layer_index: int, body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def add_layer(body_json: str = "") -> str:
     """Add a layer; optional body_json is passed through."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1627,7 +1835,7 @@ async def add_layer(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_composition_overview() -> str:
     """Raw composition settings plus the full layers, columns, groups and decks lists in one read. Large on real shows; prefer get_composition_summary."""
     composition = await _client().request("GET", "/composition")
@@ -1642,7 +1850,7 @@ async def get_composition_overview() -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_composition_summary() -> str:
     """Compact show state from one read: composition name and BPM, every layer (name, bypassed, opacity, loaded clip count, playing clips), columns, decks and groups. Start here; it stays small on large shows."""
     composition = await _client().request("GET", "/composition")
@@ -1678,7 +1886,7 @@ async def get_composition_summary() -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_layer_summary(layer_index: int) -> str:
     """Compact view of one layer: name, bypassed, opacity and every loaded clip slot (index, name, connected state, transport type). Much smaller than get_layer."""
     layer = await _client().request("GET", f"/composition/layers/{layer_index}")
@@ -1688,7 +1896,7 @@ async def get_layer_summary(layer_index: int) -> str:
     return _json_response({"ok": True, **_layer_summary(layer_index, body), "clips": _loaded_clips(body)})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def wait_for_resolume(timeout_s: float = 60.0, interval_s: float = 1.0) -> str:
     """Poll Resolume's REST API until it answers (e.g. right after launching Arena). Returns ready, how long it took and product info. timeout_s is capped at 300, interval_s at 10."""
     if not 0 < timeout_s <= 300 or not 0 < interval_s <= 10:
@@ -1712,7 +1920,7 @@ async def wait_for_resolume(timeout_s: float = 60.0, interval_s: float = 1.0) ->
         await asyncio.sleep(interval_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_layer_snapshot(layer_index: int) -> str:
     """One-read layer snapshot: layer settings, its clips, opacity and bypassed values."""
     client = _client()
@@ -1730,7 +1938,7 @@ async def get_layer_snapshot(layer_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def audit_layer(layer_index: int) -> str:
     """Audit a layer: flags no clips, zero opacity or bypassed."""
     client = _client()
@@ -1777,7 +1985,7 @@ async def audit_layer(layer_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def audit_composition() -> str:
     """Readiness audit of the composition: counts layers/columns/groups/decks, checks tempo, returns findings."""
     client = _client()
@@ -1840,38 +2048,38 @@ async def audit_composition() -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_layer_parameter(layer_index: int, parameter_suffix: str) -> str:
     """Read a layer parameter. parameter_suffix is the path inside the scope's REST payload, e.g. 'video/opacity' or 'bypassed'."""
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "get", parameter_suffix)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_layer_parameter(layer_index: int, parameter_suffix: str, value_json: str) -> str:
     """Set a layer parameter; value_json is a JSON value. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "set", parameter_suffix, value=_parse_json(value_json))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def subscribe_layer_parameter(layer_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
     """Watch a layer parameter. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received."""
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "subscribe", parameter_suffix, duration_s=duration_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_layer_parameter(layer_index: int, parameter_suffix: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}", "unsubscribe", parameter_suffix)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_column(column_index: int) -> str:
     """Raw REST payload for one column (1-based column_index)."""
     result = await _client().request("GET", f"/composition/columns/{column_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def duplicate_column(column_index: int, body_json: str = "") -> str:
     """Duplicate a column (1-based column_index)."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1879,7 +2087,7 @@ async def duplicate_column(column_index: int, body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def add_column(body_json: str = "") -> str:
     """Add a column; optional body_json is passed through."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1887,14 +2095,14 @@ async def add_column(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_group(group_index: int) -> str:
     """Raw REST payload for one layer group (1-based group_index)."""
     result = await _client().request("GET", f"/composition/layergroups/{group_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def duplicate_group(group_index: int, body_json: str = "") -> str:
     """Duplicate a layer group."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1902,7 +2110,7 @@ async def duplicate_group(group_index: int, body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def add_group(body_json: str = "") -> str:
     """Add a layer group; optional body_json is passed through."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1910,7 +2118,7 @@ async def add_group(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def add_layer_to_group(group_index: int, body_json: str = "") -> str:
     """Add a new layer to a group; optional body_json is passed through."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1918,7 +2126,7 @@ async def add_layer_to_group(group_index: int, body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def move_layer_to_group(group_index: int, body_json: str) -> str:
     """Move a layer into a group; body_json (JSON object) is passed to /move-layer."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1926,7 +2134,7 @@ async def move_layer_to_group(group_index: int, body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_group(group_index: int, confirm_destructive: bool = False) -> str:
     """Clear a layer group, removing its content. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -1935,7 +2143,7 @@ async def clear_group(group_index: int, confirm_destructive: bool = False) -> st
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_selected_group(confirm_destructive: bool = False) -> str:
     """Clear the selected layer group. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -1944,14 +2152,14 @@ async def clear_selected_group(confirm_destructive: bool = False) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_deck(deck_index: int) -> str:
     """Raw REST payload for one deck (1-based deck_index)."""
     result = await _client().request("GET", f"/composition/decks/{deck_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def duplicate_deck(deck_index: int, body_json: str = "") -> str:
     """Duplicate a deck."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1959,7 +2167,7 @@ async def duplicate_deck(deck_index: int, body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def add_deck(body_json: str = "") -> str:
     """Add a deck; optional body_json is passed through."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1967,7 +2175,7 @@ async def add_deck(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def open_deck(deck_index: int, body_json: str = "") -> str:
     """POST /composition/decks/{deck_index}/open."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -1975,7 +2183,7 @@ async def open_deck(deck_index: int, body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def close_deck(deck_index: int, body_json: str = "", confirm_destructive: bool = False) -> str:
     """Close a deck, removing it from the composition. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -1985,7 +2193,7 @@ async def close_deck(deck_index: int, body_json: str = "", confirm_destructive: 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_clips(layer_index: int) -> str:
     """List clips on a layer, falling back to the embedded layer payload when the direct endpoint 404s."""
     client = _client()
@@ -1998,21 +2206,21 @@ async def list_clips(layer_index: int) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_clip(layer_index: int, clip_index: int) -> str:
     """Raw REST payload for one clip (1-based layer_index and clip_index)."""
     result = await _client().request("GET", f"/composition/layers/{layer_index}/clips/{clip_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_active_clip(layer_index: int) -> str:
     """The connected clip on a layer. Returned 404 on the validated build; use list_clips and check 'connected'."""
     result = await _client().request("GET", f"/composition/layers/{layer_index}/clips/active")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def open_clip(layer_index: int, clip_index: int, body_json: str = "") -> str:
     """Load media or a source into a clip slot (replaces what is there). Sources use their display name, e.g. 'source:///video/DeckLink 8K Pro (1) - SDI 1' (encoded automatically), not the idstring. body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
     parsed = _parse_json(body_json)
@@ -2021,7 +2229,7 @@ async def open_clip(layer_index: int, clip_index: int, body_json: str = "") -> s
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def open_clip_file(layer_index: int, clip_index: int, body_json: str) -> str:
     """Load media via the deprecated /openfile endpoint; prefer open_clip. body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
     body = _normalize_media_scalar_or_field(_parse_json(body_json))
@@ -2029,7 +2237,7 @@ async def open_clip_file(layer_index: int, clip_index: int, body_json: str) -> s
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def insert_clip(layer_index: int, clip_index: int, body_json: str) -> str:
     """Insert media at a clip slot; body_json is a path/URI or a JSON array of them."""
     body = _normalize_media_insert_body(_parse_json(body_json))
@@ -2037,7 +2245,7 @@ async def insert_clip(layer_index: int, clip_index: int, body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def open_clip_in_selected_slot(body_json: str) -> str:
     """Load media into the selected clip slot. body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
     parsed = _parse_json(body_json)
@@ -2046,7 +2254,7 @@ async def open_clip_in_selected_slot(body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def open_selected_clip(body_json: str = "") -> str:
     """Load media into the selected clip. body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
     parsed = _parse_json(body_json)
@@ -2055,7 +2263,7 @@ async def open_selected_clip(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def open_selected_clip_file(body_json: str) -> str:
     """Deprecated /openfile variant of open_selected_clip. body_json: a media path or URI as a JSON string (Windows/POSIX paths become file:// URIs), or an object with a 'path' field."""
     body = _normalize_media_scalar_or_field(_parse_json(body_json))
@@ -2063,7 +2271,7 @@ async def open_selected_clip_file(body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def insert_selected_clip(body_json: str) -> str:
     """Insert media at the selected clip; body_json is a path/URI or a JSON array of them."""
     body = _normalize_media_insert_body(_parse_json(body_json))
@@ -2071,28 +2279,28 @@ async def insert_selected_clip(body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_available_effects() -> str:
     """List the effects Resolume offers (use the effect URIs with add_effect)."""
     result = await _client().request("GET", "/effects")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def list_available_sources() -> str:
     """List generator and capture sources. Load one with open_clip using 'source:///video/<display name>'."""
     result = await _client().request("GET", "/sources")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_product_info() -> str:
     """Resolume product name and version; a quick connectivity check."""
     result = await _client().request("GET", "/product")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_file_info(body_json: str) -> str:
     """Ask Resolume about media files; body_json is a JSON array of paths or URIs."""
     body = _parse_json_list(body_json, field_name="body_json")
@@ -2101,7 +2309,7 @@ async def get_file_info(body_json: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def update_clip_thumbnail(layer_index: int, clip_index: int, body_json: str = "") -> str:
     """Regenerate a clip's thumbnail."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -2109,14 +2317,14 @@ async def update_clip_thumbnail(layer_index: int, clip_index: int, body_json: st
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def revert_clip_thumbnail(layer_index: int, clip_index: int) -> str:
     """Revert a clip's thumbnail to the default."""
     result = await _client().request("DELETE", f"/composition/layers/{layer_index}/clips/{clip_index}/thumbnail")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def update_selected_clip_thumbnail(body_json: str = "") -> str:
     """Regenerate the selected clip's thumbnail."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -2124,14 +2332,14 @@ async def update_selected_clip_thumbnail(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def revert_selected_clip_thumbnail() -> str:
     """Revert the selected clip's thumbnail to the default."""
     result = await _client().request("DELETE", "/composition/clips/selected/thumbnail")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_clip_snapshot(layer_index: int, clip_index: int) -> str:
     """One-read clip snapshot: connected, selected, speed and position."""
     client = _client()
@@ -2156,7 +2364,7 @@ async def get_clip_snapshot(layer_index: int, clip_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def audit_clip(layer_index: int, clip_index: int) -> str:
     """Audit a clip: flags disconnected, not selected, zero speed or bypassed."""
     client = _client()
@@ -2209,7 +2417,7 @@ async def audit_clip(layer_index: int, clip_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def trigger_clips(layer_index: int, clip_indices_json: str) -> str:
     """Trigger several clips on one layer; clip_indices_json is a JSON array."""
     clip_indices = _parse_json_list(clip_indices_json, field_name="clip_indices_json")
@@ -2221,7 +2429,7 @@ async def trigger_clips(layer_index: int, clip_indices_json: str) -> str:
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def disconnect_clips(layer_index: int, clip_indices_json: str, confirm_destructive: bool = False) -> str:
     """Stop several clips on one layer (same fallback as disconnect_clip); clip_indices_json is a JSON array. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2232,7 +2440,7 @@ async def disconnect_clips(layer_index: int, clip_indices_json: str, confirm_des
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_layers(layer_indices_json: str, confirm_destructive: bool = False) -> str:
     """Clear several layers: stops what is playing on the layer (disconnects its active clip); the clips stay in their slots. layer_indices_json is a JSON array. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2246,7 +2454,7 @@ async def clear_layers(layer_indices_json: str, confirm_destructive: bool = Fals
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def prepare_layer(
     layer_index: int,
     *,
@@ -2277,7 +2485,7 @@ async def prepare_layer(
     return _json_response({"layer_index": layer_index, "results": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def prepare_multiple_layers(
     layer_indices_json: str,
     *,
@@ -2293,7 +2501,7 @@ async def prepare_multiple_layers(
     return _json_response({"layer_count": len(results), "layers": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def prepare_playback(
     *,
     playing: bool = True,
@@ -2349,7 +2557,7 @@ async def prepare_playback(
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_clips(layer_index: int, clip_indices_json: str) -> str:
     """Select clips on one layer in turn; clip_indices_json is a JSON array. Resolume keeps one clip selected, so the last one ends selected."""
     clip_indices = _parse_json_list(clip_indices_json, field_name="clip_indices_json")
@@ -2361,7 +2569,7 @@ async def select_clips(layer_index: int, clip_indices_json: str) -> str:
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_layers(layer_indices_json: str) -> str:
     """Select layers in turn; layer_indices_json is a JSON array. Resolume keeps one layer selected, so the last one ends selected."""
     layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
@@ -2373,7 +2581,7 @@ async def select_layers(layer_indices_json: str) -> str:
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_columns(column_indices_json: str) -> str:
     """Select columns in turn; column_indices_json is a JSON array. Resolume keeps one column selected, so the last one ends selected."""
     column_indices = _parse_json_list(column_indices_json, field_name="column_indices_json")
@@ -2385,7 +2593,7 @@ async def select_columns(column_indices_json: str) -> str:
     return _json_response({"results": results})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
     """Read tempo plus opacity/bypassed for layers (layer_indices_json) and connected/speed/position for clips (clip_pairs_json: [{"layer_index":1,"clip_index":2}])."""
     layer_indices: list[Any] = []
@@ -2439,7 +2647,7 @@ async def monitor_playback_state(layer_indices_json: str = "", clip_pairs_json: 
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def subscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "", duration_s: float = 2.0) -> str:
     """Watch tempo and the given layers/clips (same arguments as monitor_playback_state). Subscribes for duration_s seconds (max 30) on one connection and returns the updates received."""
     layer_indices, clip_pairs = _parse_playback_targets(layer_indices_json, clip_pairs_json)
@@ -2447,14 +2655,14 @@ async def subscribe_playback_state(layer_indices_json: str = "", clip_pairs_json
     return _json_response(await _watch_resolved_parameters(_client(), targets, _watch_duration(duration_s)))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_playback_state(layer_indices_json: str = "", clip_pairs_json: str = "") -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     _parse_playback_targets(layer_indices_json, clip_pairs_json)
     return _json_response({"action": "unsubscribe", "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_deck_snapshot(deck_index: int) -> str:
     """One-read deck snapshot: selected, scrollx and closed."""
     client = _client()
@@ -2476,7 +2684,7 @@ async def get_deck_snapshot(deck_index: int) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def audit_deck(deck_index: int) -> str:
     """Audit a deck: flags closed or not selected."""
     payload = json.loads(await get_deck_snapshot(deck_index))
@@ -2493,7 +2701,7 @@ async def audit_deck(deck_index: int) -> str:
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def monitor_decks(deck_indices_json: str) -> str:
     """Snapshot several decks; deck_indices_json is a JSON array."""
     deck_indices = _parse_json_list(deck_indices_json, field_name="deck_indices_json")
@@ -2514,7 +2722,7 @@ async def monitor_decks(deck_indices_json: str) -> str:
     return _json_response({"decks": decks})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def subscribe_decks(deck_indices_json: str, duration_s: float = 2.0) -> str:
     """Watch selected/scrollx on several decks. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received."""
     deck_indices = _parse_json_list(deck_indices_json, field_name="deck_indices_json")
@@ -2526,14 +2734,14 @@ async def subscribe_decks(deck_indices_json: str, duration_s: float = 2.0) -> st
     return _json_response(await _watch_resolved_parameters(_client(), targets, _watch_duration(duration_s)))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_decks(deck_indices_json: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     _parse_json_list(deck_indices_json, field_name="deck_indices_json")
     return _json_response({"action": "unsubscribe", "response": None, "note": _UNSUBSCRIBE_NOTE})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def prepare_deck(deck_index: int, *, playing: bool = True, speed: float | None = None) -> str:
     """Placeholder: deck transport is not in the validated REST schema, so this reports skipped actions and changes nothing."""
     results: list[dict[str, Any]] = [
@@ -2558,7 +2766,7 @@ async def prepare_deck(deck_index: int, *, playing: bool = True, speed: float | 
     return _json_response({"deck_index": deck_index, "results": results})
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def prepare_multiple_decks(
     deck_indices_json: str,
     *,
@@ -2574,7 +2782,7 @@ async def prepare_multiple_decks(
     return _json_response({"deck_count": len(results), "decks": results})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def prepare_output_screen(
     screen_index: int,
     *,
@@ -2643,7 +2851,7 @@ async def prepare_output_screen(
     )
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def prepare_multiple_output_screens(
     screen_indices_json: str,
     *,
@@ -2672,9 +2880,9 @@ async def prepare_multiple_output_screens(
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def audit_show_readiness() -> str:
-    """Composition audit plus Advanced Output screen audits in one call, with a total finding count."""
+    """Composition audit plus Advanced Output screen audits in one call, with a total finding count. The output part needs Advanced Output over HTTP (404 on Arena 7.23, which then contributes no findings)."""
     composition = json.loads(await audit_composition())
     output = json.loads(await audit_all_output_screens())
     return _json_response(
@@ -2690,49 +2898,49 @@ async def audit_show_readiness() -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str) -> str:
     """Read a clip parameter, e.g. 'transport/position'. parameter_suffix is the path inside the scope's REST payload, e.g. 'video/opacity' or 'bypassed'."""
     aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "get", parameter_suffix, aliases=aliases)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str, value_json: str) -> str:
     """Set a clip parameter; value_json is a JSON value. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "set", parameter_suffix, value=_parse_json(value_json), aliases=aliases)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def subscribe_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
     """Watch a clip parameter, e.g. transport/position while playing. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received."""
     aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "subscribe", parameter_suffix, aliases=aliases, duration_s=duration_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_clip_parameter(layer_index: int, clip_index: int, parameter_suffix: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     aliases = ("transport/controls/speed",) if parameter_suffix.strip() == "transport/speed" else ()
     return await _parameter_tool_impl(f"/composition/layers/{layer_index}/clips/{clip_index}", "unsubscribe", parameter_suffix, aliases=aliases)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def trigger_clip(layer_index: int, clip_index: int) -> str:
     """Trigger (connect) a clip so it plays on its layer."""
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/connect")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def trigger_selected_clip() -> str:
     """Trigger the selected clip."""
     result = await _client().request("POST", "/composition/clips/selected/connect")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def disconnect_clip(layer_index: int, clip_index: int, confirm_destructive: bool = False) -> str:
     """Stop a clip and report before/after state. Arena 7 ignores connect=false, so if the clip is still connected this clears its layer instead (only that clip stops; media stays in the slot). Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2740,32 +2948,15 @@ async def disconnect_clip(layer_index: int, clip_index: int, confirm_destructive
     return _json_response(await _disconnect_clip(_client(), layer_index, clip_index))
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def disconnect_selected_clip(confirm_destructive: bool = False) -> str:
-    """Disconnect the selected clip and report before/after state. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Stop the selected clip and report before/after state. Arena 7 ignores connect=false, so if the clip is still connected this clears its layer instead (only that clip stops; media stays in the slot). Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
         return _confirmation_required("disconnect_selected_clip", "This will disconnect the currently selected clip. Re-call with confirm_destructive=True to proceed.")
-    client = _client()
-    before_payload = await client.request("GET", "/composition/clips/selected")
-    before_state = _extract_body(before_payload).get("connected", {}).get("value") if isinstance(_extract_body(before_payload), dict) else None
-    if isinstance(before_state, str) and not _is_connected(before_state):
-        return _json_response({"response": None, "before_state": before_state, "after_state": before_state, "disconnected": True, "note": "Selected clip was not playing; nothing was sent."})
-    response = await client.request("POST", "/composition/clips/selected/connect", body=False)
-    after_payload = await client.request("GET", "/composition/clips/selected")
-    after_state = _extract_body(after_payload).get("connected", {}).get("value") if isinstance(_extract_body(after_payload), dict) else None
-    disconnected = after_state in {"Disconnected", "Empty"}
-    return _json_response(
-        {
-            "response": response,
-            "before_state": before_state,
-            "after_state": after_state,
-            "disconnected": disconnected,
-            "note": None if disconnected else "Selected clip remained connected after disconnect request on this Resolume build.",
-        }
-    )
+    return _json_response(await _disconnect_selected_clip(_client()))
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_clip(layer_index: int, clip_index: int, confirm_destructive: bool = False) -> str:
     """Remove a clip's media and verify the slot empties. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2798,7 +2989,7 @@ async def clear_clip(layer_index: int, clip_index: int, confirm_destructive: boo
     )
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_selected_clip(confirm_destructive: bool = False) -> str:
     """Remove the selected clip's media and verify. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2841,51 +3032,50 @@ async def clear_selected_clip(confirm_destructive: bool = False) -> str:
     )
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def trigger_column(column_index: int) -> str:
     """Trigger (connect) a column, launching its clip on every layer."""
     result = await _client().request("POST", f"/composition/columns/{column_index}/connect")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def disconnect_column(column_index: int, confirm_destructive: bool = False) -> str:
-    """Disconnect a column via connect=false, which Arena 7 ignores for clips; check the result with get_composition_summary. Destructive: without confirm_destructive=True it only returns a confirmation request."""
+    """Stop every clip playing from a column and report which layers were playing it. Arena 7 ignores connect=false, so layers still playing the column are cleared one by one (only those clips stop; media stays in the slots). Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
-        return _confirmation_required("disconnect_column", f"This will disconnect column {column_index}. Re-call with confirm_destructive=True to proceed.")
-    result = await _client().request("POST", f"/composition/columns/{column_index}/connect", body=False)
-    return _json_response(result)
+        return _confirmation_required("disconnect_column", f"This will stop every clip playing from column {column_index} (layers still playing it are cleared). Re-call with confirm_destructive=True to proceed.")
+    return _json_response(await _disconnect_column(_client(), column_index))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_group_column(group_index: int, column_index: int) -> str:
     """Read a group column. Returned 404 on the validated build."""
     result = await _client().request("GET", f"/composition/layergroups/{group_index}/columns/{column_index}")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def trigger_group_column(group_index: int, column_index: int) -> str:
     """Trigger a column within one group. Returned 404 on the validated build."""
     result = await _client().request("POST", f"/composition/layergroups/{group_index}/columns/{column_index}/connect")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_group_column(group_index: int, column_index: int) -> str:
     """Select a column within one group. Returned 404 on the validated build."""
     result = await _client().request("POST", f"/composition/layergroups/{group_index}/columns/{column_index}/select")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_clip(layer_index: int, clip_index: int) -> str:
     """Select a clip (does not trigger it)."""
     result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/select")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_layer(layer_index: int, confirm_destructive: bool = False) -> str:
     """Clear a layer: stops what is playing on the layer (disconnects its active clip); the clips stay in their slots. Use clear_layer_clips to remove the clips themselves. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2894,7 +3084,7 @@ async def clear_layer(layer_index: int, confirm_destructive: bool = False) -> st
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_selected_layer(confirm_destructive: bool = False) -> str:
     """Clear the selected layer: stops what is playing on the layer (disconnects its active clip); the clips stay in their slots. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2903,7 +3093,7 @@ async def clear_selected_layer(confirm_destructive: bool = False) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_layer_clips(layer_index: int, confirm_destructive: bool = False) -> str:
     """Remove all clips from a layer and verify the first slot empties. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2947,7 +3137,7 @@ async def clear_layer_clips(layer_index: int, confirm_destructive: bool = False)
     )
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_selected_layer_clips(confirm_destructive: bool = False) -> str:
     """Remove all clips from the selected layer. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2978,7 +3168,7 @@ async def clear_selected_layer_clips(confirm_destructive: bool = False) -> str:
     )
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def clear_composition(confirm_destructive: bool = False) -> str:
     """Clear all media from the entire composition. Destructive: without confirm_destructive=True it only returns a confirmation request."""
     if not confirm_destructive:
@@ -2987,28 +3177,28 @@ async def clear_composition(confirm_destructive: bool = False) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_layer(layer_index: int) -> str:
     """Select a layer."""
     result = await _client().request("POST", f"/composition/layers/{layer_index}/select")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_column(column_index: int) -> str:
     """Select a column (does not trigger it)."""
     result = await _client().request("POST", f"/composition/columns/{column_index}/select")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_group(group_index: int) -> str:
     """Select a layer group."""
     result = await _client().request("POST", f"/composition/layergroups/{group_index}/select")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def duplicate_selected_layer(body_json: str = "") -> str:
     """Duplicate the currently selected layer."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -3016,7 +3206,7 @@ async def duplicate_selected_layer(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def duplicate_selected_group(body_json: str = "") -> str:
     """Duplicate the selected layer group. Selected-group endpoints returned 404 on the validated build."""
     body = _optional_json_object(body_json, field_name="body_json")
@@ -3024,74 +3214,74 @@ async def duplicate_selected_group(body_json: str = "") -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def select_deck(deck_index: int) -> str:
     """Select (switch to) a deck."""
     result = await _client().request("POST", f"/composition/decks/{deck_index}/select")
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_parameter(path: str, value_json: str) -> str:
     """Set a parameter under /advancedoutput (fire-and-forget). Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_websocket_tool_impl("set", _normalize_output_path(path), value=_parse_json(value_json))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_parameter(path: str) -> str:
     """Read a parameter under /advancedoutput over WebSocket. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_websocket_tool_impl("get", _normalize_output_path(path))
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def trigger_output_action(path: str) -> str:
     """Trigger an action under /advancedoutput. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_websocket_tool_impl("trigger", _normalize_output_path(path))
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def reset_output_parameter(path: str) -> str:
     """Reset a parameter under /advancedoutput. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_websocket_tool_impl("reset", _normalize_output_path(path))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def subscribe_output_parameter(path: str, duration_s: float = 2.0) -> str:
     """Watch a parameter under /advancedoutput. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_watch_tool_impl(_normalize_output_path(path), duration_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_output_parameter(path: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     return _output_unsubscribe_note(_normalize_output_path(path))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def subscribe_output_screen_parameter(screen_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
     """Watch a screen parameter. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_watch_tool_impl(_join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix), duration_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_output_screen_parameter(screen_index: int, parameter_suffix: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     return _output_unsubscribe_note(_join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def subscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str, duration_s: float = 2.0) -> str:
     """Watch a slice parameter. Subscribes for duration_s seconds (max 30) on one connection and returns the updates received. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     return await _output_watch_tool_impl(_join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix), duration_s)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def unsubscribe_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
     """No-op kept for compatibility: subscriptions end automatically when the subscribe call returns."""
     return _output_unsubscribe_note(_join_parameter_path(f"/advancedoutput/screens/{screen_index}/slices/{slice_index}", parameter_suffix))
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_layer_opacity(layer_index: int, opacity: float) -> str:
     """Set layer opacity (0.0-1.0). Verifies by reading the value back over REST (value_before, value_after, verified)."""
     client = _client()
@@ -3105,7 +3295,7 @@ async def set_layer_opacity(layer_index: int, opacity: float) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def set_param(parameter: str, value_json: str, confirm_destructive: bool = False) -> str:
     """Set any parameter path over WebSocket (fire-and-forget). Prefer named set_* tools, which verify. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     value = _parse_json(value_json)
@@ -3115,7 +3305,7 @@ async def set_param(parameter: str, value_json: str, confirm_destructive: bool =
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def trigger_param(parameter: str, confirm_destructive: bool = False) -> str:
     """Trigger any parameter or action path over WebSocket. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     if gate := _generic_gate("trigger_param", "trigger", parameter, None, confirm_destructive):
@@ -3124,14 +3314,14 @@ async def trigger_param(parameter: str, confirm_destructive: bool = False) -> st
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def reset_param(parameter: str) -> str:
     """Reset any parameter path to its default over WebSocket."""
     result = await _client().websocket_action("reset", parameter)
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def bypass_layer(layer_index: int, bypassed: bool = True) -> str:
     """Bypass (hide) or un-bypass a layer. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     client = _client()
@@ -3145,7 +3335,7 @@ async def bypass_layer(layer_index: int, bypassed: bool = True) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_clip_transport_position(layer_index: int, clip_index: int, position: float) -> str:
     """Set clip playhead position. Read-back verification can report false while the clip is playing, because the position keeps moving."""
     client = _client()
@@ -3159,7 +3349,7 @@ async def set_clip_transport_position(layer_index: int, clip_index: int, positio
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_clip_speed(layer_index: int, clip_index: int, speed: float) -> str:
     """Set clip playback speed (1.0 = normal). Verifies by reading the value back over REST (value_before, value_after, verified)."""
     client = _client()
@@ -3174,7 +3364,7 @@ async def set_clip_speed(layer_index: int, clip_index: int, speed: float) -> str
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_screen_enabled(screen_index: int, enabled: bool = True) -> str:
     """Enable or disable an output screen. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().websocket_action(
@@ -3185,7 +3375,7 @@ async def set_output_screen_enabled(screen_index: int, enabled: bool = True) -> 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_slice_bypassed(screen_index: int, slice_index: int, bypassed: bool = True) -> str:
     """Bypass or un-bypass a slice. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().websocket_action(
@@ -3196,7 +3386,7 @@ async def set_output_slice_bypassed(screen_index: int, slice_index: int, bypasse
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_slice_input(screen_index: int, slice_index: int, input_path: str) -> str:
     """Route a slice to an input path, e.g. '/composition/layers/3'. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().websocket_action(
@@ -3207,7 +3397,7 @@ async def set_output_slice_input(screen_index: int, slice_index: int, input_path
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_slice_opacity(screen_index: int, slice_index: int, opacity: float) -> str:
     """Set slice opacity (0.0-1.0). Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     result = await _client().websocket_action(
@@ -3218,7 +3408,7 @@ async def set_output_slice_opacity(screen_index: int, slice_index: int, opacity:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_composition_bpm(bpm: float) -> str:
     """Set the composition tempo in BPM. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     client = _client()
@@ -3232,7 +3422,7 @@ async def set_composition_bpm(bpm: float) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_composition_playing(playing: bool = True) -> str:
     """Set composition transport playing. The validated build does not expose transport/playing, so this usually returns skipped."""
     client = _client()
@@ -3255,7 +3445,7 @@ async def set_composition_playing(playing: bool = True) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def bypass_clip(layer_index: int, clip_index: int, bypassed: bool = True) -> str:
     """Bypass or un-bypass a clip. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     client = _client()
@@ -3269,19 +3459,19 @@ async def bypass_clip(layer_index: int, clip_index: int, bypassed: bool = True) 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def set_deck_parameter(deck_index: int, parameter_suffix: str, value_json: str) -> str:
     """Set a deck parameter; value_json is a JSON value. Verifies by reading the value back over REST (value_before, value_after, verified)."""
     return await _parameter_tool_impl(f"/composition/decks/{deck_index}", "set", parameter_suffix, value=_parse_json(value_json))
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_deck_parameter(deck_index: int, parameter_suffix: str) -> str:
     """Read a deck parameter. parameter_suffix is the path inside the scope's REST payload, e.g. 'video/opacity' or 'bypassed'."""
     return await _parameter_tool_impl(f"/composition/decks/{deck_index}", "get", parameter_suffix)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def trigger_deck_action(deck_index: int, parameter_suffix: str, confirm_destructive: bool = False) -> str:
     """Trigger an action path under a deck, e.g. 'select'. Calls matching a destructive pattern (clear, disconnect-all, DELETE, ...) need confirm_destructive=True."""
     path = _join_parameter_path(f"/composition/decks/{deck_index}", parameter_suffix)
@@ -3291,7 +3481,7 @@ async def trigger_deck_action(deck_index: int, parameter_suffix: str, confirm_de
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def reset_deck_parameter(deck_index: int, parameter_suffix: str) -> str:
     """Reset a deck parameter to its default."""
     path = _join_parameter_path(f"/composition/decks/{deck_index}", parameter_suffix)
@@ -3299,7 +3489,7 @@ async def reset_deck_parameter(deck_index: int, parameter_suffix: str) -> str:
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def add_effect(
     scope: str,
     effect_kind: str,
@@ -3323,7 +3513,7 @@ async def add_effect(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
+@_tool(_DESTRUCTIVE)
 async def remove_effect(
     scope: str,
     effect_kind: str,
@@ -3344,7 +3534,7 @@ async def remove_effect(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY)
 async def get_effect(
     scope: str,
     effect_kind: str,
@@ -3385,7 +3575,7 @@ async def get_effect(
     return _json_response(payload)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def move_video_effect(
     scope: str,
     body_json: str,
@@ -3405,7 +3595,7 @@ async def move_video_effect(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE)
 async def rename_effect(
     scope: str,
     effect_kind: str,
@@ -3427,7 +3617,7 @@ async def rename_effect(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_screen_parameter(screen_index: int, parameter_suffix: str, value_json: str) -> str:
     """Set a screen parameter; value_json is a JSON value. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     value = _parse_json(value_json)
@@ -3436,7 +3626,7 @@ async def set_output_screen_parameter(screen_index: int, parameter_suffix: str, 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_screen_parameter(screen_index: int, parameter_suffix: str) -> str:
     """Read a screen parameter, e.g. 'enabled'. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     path = _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix)
@@ -3444,7 +3634,7 @@ async def get_output_screen_parameter(screen_index: int, parameter_suffix: str) 
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def trigger_output_screen_action(screen_index: int, parameter_suffix: str) -> str:
     """Trigger a screen action. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     path = _join_parameter_path(f"/advancedoutput/screens/{screen_index}", parameter_suffix)
@@ -3452,7 +3642,7 @@ async def trigger_output_screen_action(screen_index: int, parameter_suffix: str)
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_slice_parameter(
     screen_index: int,
     slice_index: int,
@@ -3469,7 +3659,7 @@ async def set_output_slice_parameter(
     return _json_response(result)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@_tool(_READ_ONLY, experimental=True)
 async def get_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
     """Read a slice parameter, e.g. 'opacity'. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     path = _join_parameter_path(
@@ -3480,7 +3670,7 @@ async def get_output_slice_parameter(screen_index: int, slice_index: int, parame
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def trigger_output_slice_action(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
     """Trigger a slice action. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     path = _join_parameter_path(
@@ -3491,7 +3681,7 @@ async def trigger_output_slice_action(screen_index: int, slice_index: int, param
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def reset_output_slice_parameter(screen_index: int, slice_index: int, parameter_suffix: str) -> str:
     """Reset a slice parameter. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     path = _join_parameter_path(
@@ -3502,7 +3692,7 @@ async def reset_output_slice_parameter(screen_index: int, slice_index: int, para
     return _json_response(result)
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_slice_corners(
     screen_index: int,
     slice_index: int,
@@ -3540,7 +3730,7 @@ async def set_output_slice_corners(
     return _json_response({"updates": updates})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_screen_transform(
     screen_index: int,
     *,
@@ -3571,7 +3761,7 @@ async def set_output_screen_transform(
     return _json_response({"updates": updates})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def set_output_slice_transform(
     screen_index: int,
     slice_index: int,
@@ -3603,7 +3793,7 @@ async def set_output_slice_transform(
     return _json_response({"updates": updates})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def batch_set_output_screen_parameter(
     screen_indices_json: str,
     parameter_suffix: str,
@@ -3620,7 +3810,7 @@ async def batch_set_output_screen_parameter(
     return _json_response({"updates": updates})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def batch_set_output_slice_parameter(
     screen_index: int,
     slice_indices_json: str,
@@ -3641,7 +3831,7 @@ async def batch_set_output_slice_parameter(
     return _json_response({"updates": updates})
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def batch_set_output_slice_opacity(
     screen_index: int,
     slice_indices_json: str,
@@ -3656,7 +3846,7 @@ async def batch_set_output_slice_opacity(
     )
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def batch_set_output_slice_bypassed(
     screen_index: int,
     slice_indices_json: str,
@@ -3671,7 +3861,7 @@ async def batch_set_output_slice_bypassed(
     )
 
 
-@mcp.tool(annotations=_WRITE)
+@_tool(_WRITE, experimental=True)
 async def route_output_slices(screen_index: int, routes_json: str) -> str:
     """Route several slices: routes_json is [{"slice_index":0,"input_path":"/composition/layers/1"}]. Experimental: the validated Resolume build does not expose Advanced Output over HTTP (404)."""
     routes = _parse_json_list(routes_json, field_name="routes_json")
@@ -3696,22 +3886,28 @@ async def route_output_slices(screen_index: int, routes_json: str) -> str:
     return _json_response({"updates": updates})
 
 
+def _registered(names: list[str]) -> list[str]:
+    return [name for name in names if name not in _HIDDEN_EXPERIMENTAL_TOOLS]
+
+
 @mcp.resource("resolume://docs/api-primitives")
 def api_primitives() -> str:
     return _json_response(
         {
-            "rest_tools": ["rest_request", "rest_get", "rest_post", "rest_put", "rest_delete", "get_node"],
-            "websocket_tools": [
-                "websocket_action",
-                "websocket_get",
-                "websocket_set",
-                "websocket_trigger",
-                "websocket_reset",
-                "websocket_subscribe",
-                "websocket_unsubscribe",
-                "websocket_post",
-                "websocket_remove",
-            ],
+            "rest_tools": _registered(["rest_request", "rest_get", "rest_post", "rest_put", "rest_delete", "get_node"]),
+            "websocket_tools": _registered(
+                [
+                    "websocket_action",
+                    "websocket_get",
+                    "websocket_set",
+                    "websocket_trigger",
+                    "websocket_reset",
+                    "websocket_subscribe",
+                    "websocket_unsubscribe",
+                    "websocket_post",
+                    "websocket_remove",
+                ]
+            ),
             "osc_tools": ["osc_send"],
             "notes": [
                 "Use REST for composition-tree inspection and many structural operations; named parameter reads come straight from the REST payload.",

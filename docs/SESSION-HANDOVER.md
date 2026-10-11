@@ -8,7 +8,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
 
 - Repo path: wherever this repo is cloned (e.g. `C:\Users\<user>\resolume-mcp` on the Windows media servers)
 - Project type: private MCP server for Resolume Arena/Avenue
-- Validation status: `259 passed` (2026-10-12, Windows)
+- Validation status: `293 passed` (2026-10-12, Windows)
 - Windows live probe: `scripts/live_probe.py --write-checks` passed on Arena 7.23.2 on 2026-10-12; findings are in `docs/LIVE-VALIDATION.md`
 - Live validation: local Resolume instance confirmed reachable on `127.0.0.1:8080`
 - Validation environment: macOS laptop
@@ -79,8 +79,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
   - deck parameter get/set/trigger/reset
   - deck snapshot
   - deck audit
-  - deck prep helper
-  - batch deck prep helper
+  - deck prep helper and batch deck prep helper (placeholders that change nothing; hidden unless `RESOLUME_EXPERIMENTAL_TOOLS=1`)
   - deck monitor helper
   - deck watch helpers (`subscribe_decks` collects updates for `duration_s`; unsubscribe is a no-op)
   - deck select helper
@@ -99,7 +98,7 @@ This file is the current internal handoff snapshot for the public `resolume-mcp`
   - slice routing helper
   - screen prep and multi-screen prep
   - all-screen audit
-  - current status on this machine: experimental, because the local Resolume 7 API does not expose Advanced Output HTTP paths
+  - current status: every REST/WebSocket output path returns `404` on the validated macOS and Windows builds, so these tools are registered only with `RESOLUME_EXPERIMENTAL_TOOLS=1`
   - XML-backed tools now available:
     - summary
     - screen inspection
@@ -139,6 +138,12 @@ Those sessions bypassed the MCP for most Resolume work (about 96 direct REST cal
 6. Advanced Output presets (`Presets\Advanced Output\*.xml`): create screens and slices, set NDI or DMX output devices, re-point slice inputs after a layer reorder.
 7. Clip setup helpers: transport type (Timeline / BPM Sync / SMPTE n), play mode, column-trigger behavior, resize, plus column add/rename and composition resolution.
 8. Parameter access by id over REST (`/parameter/by-id/{id}`); the show scripts used it directly.
+
+### Fixed on `feat/tool-gating-audit-log` (2026-10-12)
+
+- The 50 tools that return `404` or do nothing on Arena 7.23 (Advanced Output over REST/WebSocket, the `unsubscribe_*` no-ops, `prepare_deck`, `prepare_multiple_decks`, `get_node`) are registered only with `RESOLUME_EXPERIMENTAL_TOOLS=1`. Clients see 159 tools by default (about 17k tokens of schema instead of 23k). The functions stay importable, and every tool goes through `_tool(...)` in `server.py`.
+- `disconnect_selected_clip` and `disconnect_column` got the layer-clear fallback that `disconnect_clip` already had. The selected clip's layer is found by clip id in `/composition`; the column variant clears only the layers still playing that column and reports them.
+- Every write and destructive call is appended to `<documents_root>/Logs/resolume-mcp-audit.jsonl` (`RESOLUME_AUDIT_LOG`, `off` disables). Reads are not logged.
 
 ## Notes
 

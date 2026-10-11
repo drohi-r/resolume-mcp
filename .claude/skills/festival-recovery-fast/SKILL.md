@@ -7,6 +7,10 @@ description: Use when a Resolume show must be recovered quickly under venue or f
 
 Use this skill when time pressure matters more than elegant sequencing and the goal is a fast stable show state.
 
+## Requirements
+
+Start with `get_composition_summary`: one small read with every layer's bypass, opacity and playing clips. The output-side tools (`audit_all_output_screens`, `prepare_output_screen`, `route_output_slices`, `set_output_slice_input`) need Advanced Output over REST/WebSocket, which Arena 7.23 does not expose; they are registered only with `RESOLUME_EXPERIMENTAL_TOOLS=1`. Without it, `audit_show_readiness` reports composition findings only, and output changes go through the `*_xml` tools (see the `advanced-output-setup` skill). Every write is appended to the audit log, so the recovery pass can be reviewed afterwards.
+
 ## Workflow
 
 1. Start broad.

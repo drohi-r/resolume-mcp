@@ -29,6 +29,12 @@ Environment variables:
   - default on the current macOS validation machine: `~/Documents/Resolume Arena/Preferences/AdvancedOutput.xml`
 - `RESOLUME_SLICES_XML`
   - default on the current macOS validation machine: `~/Documents/Resolume Arena/Preferences/slices.xml`
+- `RESOLUME_AUDIT_LOG`
+  - default: `<documents root>/Logs/resolume-mcp-audit.jsonl`
+  - `off` disables the JSONL audit log of write and destructive tool calls
+- `RESOLUME_EXPERIMENTAL_TOOLS`
+  - default: `0`
+  - `1` also registers the Advanced Output REST/WebSocket tools, the `unsubscribe_*` no-ops and the deck prep placeholders, which return `404` or do nothing on Arena 7.23
 
 Important:
 
@@ -69,12 +75,12 @@ Important:
 Start with read-only validation:
 
 1. `get_server_config`
-2. `get_composition`
-3. `get_composition_overview`
-4. `get_output_overview`
-5. `audit_show_readiness`
+2. `get_product_info` (or `wait_for_resolume` right after launching Arena)
+3. `get_composition_summary`
+4. `audit_composition`
+5. `get_advanced_output_preferences_summary`
 
-If those work, the basic HTTP/WebSocket surface is behaving.
+If those work, the basic HTTP surface and the local XML paths are behaving.
 
 For actual live-instance notes from this machine, see:
 
@@ -110,11 +116,12 @@ Use minimal-impact writes first:
 
 - `set_composition_playing`
 - `set_composition_bpm`
+- `set_layer_opacity`
 - `prepare_layer`
-- `prepare_output_screen`
-- `prepare_deck`
 
 Do not jump straight to batch writes until the single-surface writes behave as expected against the target Resolume instance.
+
+Each of these appends one line to the audit log (`get_server_config` shows `audit_log_path`). Open it after the first writes to see the record shape: timestamp, tool, arguments, outcome and a short result summary.
 
 Notes:
 

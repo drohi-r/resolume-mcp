@@ -1,4 +1,8 @@
+import asyncio
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -2299,6 +2303,10 @@ async def test_disconnect_selected_clip_reports_verified_state(mock_client_facto
     assert payload["before_state"] == "Connected"
     assert payload["after_state"] == "Connected"
     assert payload["disconnected"] is False
+    assert payload["method"] == "connect=false"
+    assert payload["layer_index"] is None
+    assert payload["fallback_response"] is None
+    assert fake.request.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -2608,3 +2616,368 @@ async def test_save_composition_explains_missing_endpoint(mock_client_factory):
 
     payload = json.loads(await save_composition())
     assert "Ctrl+S" in payload["note"]
+
+
+# --- tool surface gating -------------------------------------------------------------------------
+
+_HIDDEN_BY_DEFAULT = (
+    "get_output_overview",
+    "audit_all_output_screens",
+    "route_output_slices",
+    "set_output_slice_corners",
+    "get_advanced_output_tree",
+    "unsubscribe_layer_parameter",
+    "unsubscribe_playback_state",
+    "websocket_unsubscribe",
+    "prepare_deck",
+    "prepare_multiple_decks",
+    "get_node",
+)
+
+
+@pytest.mark.asyncio
+async def test_experimental_tools_are_hidden_by_default():
+    from resolume_mcp import server
+
+    names = {tool.name for tool in await mcp.list_tools()}
+    for name in _HIDDEN_BY_DEFAULT:
+        assert name not in names, name
+        assert callable(getattr(server, name)), name  # still importable for direct use
+    for name in ("get_composition_summary", "audit_show_readiness", "set_layer_opacity", "websocket_subscribe", "restore_advanced_output_preferences", "get_advanced_output_preferences_summary"):
+        assert name in names, name
+    assert server._HIDDEN_EXPERIMENTAL_TOOLS >= set(_HIDDEN_BY_DEFAULT)
+    assert names.isdisjoint(server._HIDDEN_EXPERIMENTAL_TOOLS)
+
+
+def test_experimental_flag_registers_hidden_tools():
+    from resolume_mcp import server
+
+    code = "import asyncio, json\nfrom resolume_mcp.server import mcp\nprint(json.dumps(sorted(t.name for t in asyncio.run(mcp.list_tools()))))"
+    env = {**os.environ, "RESOLUME_EXPERIMENTAL_TOOLS": "1"}
+    completed = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True, timeout=120)
+    names = set(json.loads(completed.stdout.strip().splitlines()[-1]))
+    default_names = {tool.name for tool in asyncio.run(mcp.list_tools())}
+    assert names == default_names | server._HIDDEN_EXPERIMENTAL_TOOLS
+
+
+def test_api_primitives_omits_hidden_tools():
+    payload = json.loads(api_primitives())
+    assert "rest_get" in payload["rest_tools"]
+    assert "get_node" not in payload["rest_tools"]
+    assert "websocket_unsubscribe" not in payload["websocket_tools"]
+    assert "websocket_subscribe" in payload["websocket_tools"]
+
+
+def test_get_server_config_reports_audit_log_and_experimental_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(tmp_path / "a.jsonl"))
+    payload = json.loads(get_server_config())
+    assert payload["audit_log_path"] == str(tmp_path / "a.jsonl")
+    assert payload["experimental_tools"] is False
+
+
+# --- audit log -----------------------------------------------------------------------------------
+
+
+def _audit_records(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_write_tool_appends_an_audit_record(mock_client_factory, tmp_path, monkeypatch):
+    from resolume_mcp.server import set_layer_opacity
+
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(log))
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"body": {"video": {"opacity": {"id": 7, "value": 0.5}}}})
+    fake.websocket_action = AsyncMock(return_value={"request": {"action": "set"}})
+    mock_client_factory.return_value = fake
+
+    await set_layer_opacity(1, 0.5)
+
+    (record,) = _audit_records(log)
+    assert record["tool"] == "set_layer_opacity"
+    assert record["arguments"] == {"layer_index": 1, "opacity": 0.5}
+    assert record["outcome"] == "ok"
+    assert record["summary"]["verified"] is True
+    assert record["target"] == "http://127.0.0.1:8080"
+    assert record["ts"].endswith("Z")
+    assert record["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_destructive_call_is_audited(tmp_path, monkeypatch):
+    from resolume_mcp.server import clear_clip
+
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(log))
+
+    await clear_clip(1, 2)
+
+    (record,) = _audit_records(log)
+    assert record["tool"] == "clear_clip"
+    assert record["arguments"] == {"layer_index": 1, "clip_index": 2, "confirm_destructive": False}
+    assert record["outcome"] == "confirmation_required"
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_read_only_tool_is_not_audited(mock_client_factory, tmp_path, monkeypatch):
+    from resolume_mcp.server import get_layer
+
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(log))
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"ok": True})
+    mock_client_factory.return_value = fake
+
+    await get_layer(1)
+
+    assert not log.exists()
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_failed_write_is_audited_as_error_and_reraised(mock_client_factory, tmp_path, monkeypatch):
+    from resolume_mcp.server import trigger_clip
+
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(log))
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=RuntimeError("boom"))
+    mock_client_factory.return_value = fake
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await trigger_clip(1, 1)
+
+    (record,) = _audit_records(log)
+    assert record["outcome"] == "error"
+    assert record["error"] == "boom"
+    assert "summary" not in record
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_nested_tool_calls_are_audited_once(mock_client_factory, tmp_path, monkeypatch):
+    from resolume_mcp.server import prepare_multiple_layers
+
+    log = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(log))
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value={"body": {"bypassed": {"id": 5, "value": False}}})
+    fake.websocket_action = AsyncMock(return_value={})
+    mock_client_factory.return_value = fake
+
+    await prepare_multiple_layers("[1, 2]")
+
+    assert [record["tool"] for record in _audit_records(log)] == ["prepare_multiple_layers"]
+
+
+def test_sync_write_tool_is_audited(tmp_path: Path):
+    from resolume_mcp.config import ResolumeConfig
+    from resolume_mcp.server import rename_advanced_output_screen
+
+    advanced_output = tmp_path / "AdvancedOutput.xml"
+    slices_xml = tmp_path / "slices.xml"
+    advanced_output.write_text(ADVANCED_OUTPUT_XML, encoding="utf-8")
+    slices_xml.write_text(SLICES_XML, encoding="utf-8")
+    log = tmp_path / "audit.jsonl"
+
+    with patch(
+        "resolume_mcp.server.load_config",
+        return_value=ResolumeConfig(
+            documents_root=str(tmp_path),
+            advanced_output_xml_path=str(advanced_output),
+            slices_xml_path=str(slices_xml),
+            audit_log_path=str(log),
+        ),
+    ):
+        rename_advanced_output_screen(0, "Main Wall")
+
+    (record,) = _audit_records(log)
+    assert record["tool"] == "rename_advanced_output_screen"
+    assert record["arguments"]["new_name"] == "Main Wall"
+    assert record["outcome"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_disabled_audit_log_writes_nothing(tmp_path, monkeypatch):
+    from resolume_mcp.server import clear_clip
+
+    monkeypatch.setenv("RESOLUME_DOCUMENTS_ROOT", str(tmp_path))
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", "off")
+
+    await clear_clip(1, 2)
+
+    assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.asyncio
+async def test_audit_log_failure_does_not_break_the_tool(tmp_path, monkeypatch):
+    from resolume_mcp.server import clear_clip
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("RESOLUME_AUDIT_LOG", str(blocker / "audit.jsonl"))
+
+    payload = json.loads(await clear_clip(1, 2))
+    assert payload["requires_confirmation"] is True
+
+
+@pytest.mark.asyncio
+async def test_audited_tools_keep_their_schema():
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    assert list(tools["set_layer_opacity"].inputSchema["properties"]) == ["layer_index", "opacity"]
+    assert tools["set_layer_opacity"].inputSchema["required"] == ["layer_index", "opacity"]
+    assert sorted(tools["rename_advanced_output_screen"].inputSchema["properties"]) == ["backup_dir", "new_name", "screen_index"]
+    assert tools["clear_clip"].inputSchema["properties"]["confirm_destructive"]["default"] is False
+    assert tools["set_layer_opacity"].annotations.readOnlyHint is False
+
+
+# --- disconnect fallbacks ------------------------------------------------------------------------
+
+
+def _composition_with_playing_clips(playing: dict[int, int]):
+    """Three layers with three clip slots each; playing maps layer_index -> the connected clip_index."""
+    layers = []
+    for layer_index in range(1, 4):
+        clips = []
+        for clip_index in range(1, 4):
+            state = "Connected" if playing.get(layer_index) == clip_index else "Disconnected"
+            clips.append({"id": 100 * layer_index + clip_index, "name": {"value": f"L{layer_index}C{clip_index}"}, "connected": {"value": state}})
+        layers.append({"id": 10 + layer_index, "clips": clips})
+    return {"path": "/api/v1/composition", "body": {"layers": layers}}
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_selected_clip_falls_back_to_clearing_its_layer(mock_client_factory):
+    from resolume_mcp.server import disconnect_selected_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"id": 202, "connected": {"value": "Connected"}}},
+        {"ok": True, "status_code": 204},
+        {"body": {"id": 202, "connected": {"value": "Connected"}}},
+        _composition_with_playing_clips({2: 2}),
+        {"ok": True, "status_code": 204},
+        {"body": {"id": 202, "connected": {"value": "Disconnected"}}},
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_selected_clip(confirm_destructive=True))
+    assert payload["method"] == "layer clear"
+    assert payload["layer_index"] == 2
+    assert payload["after_state"] == "Disconnected"
+    assert payload["disconnected"] is True
+    assert payload["fallback_response"] == {"ok": True, "status_code": 204}
+    fake.request.assert_any_await("POST", "/composition/clips/selected/connect", body=False)
+    fake.request.assert_any_await("POST", "/composition/layers/2/clear")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_selected_clip_reports_when_its_layer_cannot_be_found(mock_client_factory):
+    from resolume_mcp.server import disconnect_selected_clip
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        {"body": {"id": 999, "connected": {"value": "Connected"}}},
+        {"ok": True, "status_code": 204},
+        {"body": {"id": 999, "connected": {"value": "Connected"}}},
+        _composition_with_playing_clips({2: 2}),
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_selected_clip(confirm_destructive=True))
+    assert payload["method"] == "connect=false"
+    assert payload["layer_index"] is None
+    assert payload["disconnected"] is False
+    assert "layer" in payload["note"]
+    assert fake.request.await_count == 4
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_column_falls_back_to_clearing_layers_still_playing_it(mock_client_factory):
+    from resolume_mcp.server import disconnect_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        _composition_with_playing_clips({1: 2, 2: 1, 3: 2}),
+        {"ok": True, "status_code": 204},
+        _composition_with_playing_clips({1: 2, 2: 1, 3: 2}),
+        {"ok": True, "status_code": 204},
+        {"ok": True, "status_code": 204},
+        _composition_with_playing_clips({2: 1}),
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_column(2, confirm_destructive=True))
+    assert payload["playing_layers_before"] == [1, 3]
+    assert payload["method"] == "layer clear"
+    assert payload["cleared_layers"] == [1, 3]
+    assert payload["playing_layers_after"] == []
+    assert payload["disconnected"] is True
+    fake.request.assert_any_await("POST", "/composition/columns/2/connect", body=False)
+    fake.request.assert_any_await("POST", "/composition/layers/1/clear")
+    fake.request.assert_any_await("POST", "/composition/layers/3/clear")
+    assert call("POST", "/composition/layers/2/clear") not in fake.request.await_args_list
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_column_sends_nothing_when_no_layer_plays_it(mock_client_factory):
+    from resolume_mcp.server import disconnect_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(return_value=_composition_with_playing_clips({2: 1}))
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_column(2, confirm_destructive=True))
+    assert payload["playing_layers_before"] == []
+    assert payload["method"] == "none"
+    assert payload["disconnected"] is True
+    fake.request.assert_awaited_once_with("GET", "/composition")
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_column_skips_fallback_when_connect_false_worked(mock_client_factory):
+    from resolume_mcp.server import disconnect_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        _composition_with_playing_clips({1: 2}),
+        {"ok": True, "status_code": 204},
+        _composition_with_playing_clips({}),
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_column(2, confirm_destructive=True))
+    assert payload["method"] == "connect=false"
+    assert payload["cleared_layers"] == []
+    assert payload["playing_layers_after"] == []
+    assert payload["disconnected"] is True
+    assert fake.request.await_count == 3
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_disconnect_column_does_not_claim_success_when_state_is_unreadable(mock_client_factory):
+    from resolume_mcp.server import disconnect_column
+
+    fake = MagicMock()
+    fake.request = AsyncMock(side_effect=[
+        _composition_with_playing_clips({1: 2}),
+        {"ok": True, "status_code": 204},
+        {"ok": False, "status_code": 404, "body": "Not found"},
+    ])
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await disconnect_column(2, confirm_destructive=True))
+    assert payload["disconnected"] is False
+    assert payload["playing_layers_after"] is None
+    assert payload["cleared_layers"] == []
+    assert "could not be read" in payload["note"]

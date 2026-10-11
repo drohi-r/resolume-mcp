@@ -7,6 +7,10 @@ description: Use when working with Resolume decks as the primary control surface
 
 Use this skill when the task is centered on Resolume decks rather than composition layers or Advanced Output.
 
+## Requirements
+
+The validated deck REST schema exposes `selected` and `scrollx` only, not transport fields. `prepare_deck` and `prepare_multiple_decks` are placeholders that change nothing and are registered only with `RESOLUME_EXPERIMENTAL_TOOLS=1`; use `select_deck` to switch decks and `set_deck_parameter` for the exposed fields.
+
 ## Workflow
 
 1. Inspect first.

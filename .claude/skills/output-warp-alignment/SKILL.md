@@ -7,6 +7,10 @@ description: Use when aligning, warping, or refining Resolume Advanced Output sc
 
 Use this skill when the task is geometric alignment rather than routing or playback.
 
+## Requirements
+
+The tools below drive Advanced Output over REST/WebSocket, which Arena 7.23 does not expose (every path returns `404` on the validated macOS and Windows builds). They are registered only when the server runs with `RESOLUME_EXPERIMENTAL_TOOLS=1`. Without it, work on the local XML instead: `get_advanced_output_preferences_summary`, `get_advanced_output_screen_xml` and `get_advanced_output_slice_xml` to inspect, `backup_advanced_output_preferences` first, then `set_advanced_output_slice_output_rect_xml` for position and size and `set_advanced_output_slice_homography_dst_xml` for corner-pin warps. Resolume may need a restart to pick the file up.
+
 ## Workflow
 
 1. Inspect the current target.

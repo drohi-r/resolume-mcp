@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _DEFAULT_ALLOWED_HOSTS = "127.0.0.1,localhost,::1"
+_AUDIT_LOG_OFF = frozenset({"", "0", "off", "false", "no", "none"})
 _FOLDERID_DOCUMENTS = uuid.UUID("FDD39AD0-238F-46AF-ADB4-6C85480369C7")
 
 
@@ -48,6 +49,21 @@ def _parse_bool(env_name: str, default: str) -> bool:
     return raw in ("1", "true", "yes")
 
 
+def experimental_tools_enabled() -> bool:
+    """RESOLUME_EXPERIMENTAL_TOOLS=1 also registers the tools that return 404 or do nothing on the validated Arena builds."""
+    return _parse_bool("RESOLUME_EXPERIMENTAL_TOOLS", "0")
+
+
+def _parse_audit_log_path() -> str | None:
+    """None means "derive from documents_root"; an empty string disables the audit log."""
+    raw = os.getenv("RESOLUME_AUDIT_LOG")
+    if raw is None:
+        return None
+    if raw.strip().lower() in _AUDIT_LOG_OFF:
+        return ""
+    return os.path.expanduser(raw.strip())
+
+
 def _parse_allowed_hosts(raw: str) -> frozenset[str]:
     hosts = frozenset(h.strip() for h in raw.split(",") if h.strip())
     if not hosts:
@@ -66,9 +82,14 @@ class ResolumeConfig:
     # Empty means "derive from documents_root".
     advanced_output_xml_path: str = ""
     slices_xml_path: str = ""
+    # None means "derive from documents_root"; empty disables the JSONL audit log of write/destructive calls.
+    audit_log_path: str | None = None
 
     def __post_init__(self) -> None:
-        preferences = Path(self.documents_root).expanduser() / "Preferences"
+        documents = Path(self.documents_root).expanduser()
+        preferences = documents / "Preferences"
+        if self.audit_log_path is None:
+            object.__setattr__(self, "audit_log_path", str(documents / "Logs" / "resolume-mcp-audit.jsonl"))
         if not self.advanced_output_xml_path:
             object.__setattr__(self, "advanced_output_xml_path", str(preferences / "AdvancedOutput.xml"))
         if not self.slices_xml_path:
@@ -106,6 +127,7 @@ def load_config() -> ResolumeConfig:
         documents_root=os.path.expanduser(os.getenv("RESOLUME_DOCUMENTS_ROOT", "") or default_documents_root()),
         advanced_output_xml_path=os.path.expanduser(os.getenv("RESOLUME_ADVANCED_OUTPUT_XML", "")),
         slices_xml_path=os.path.expanduser(os.getenv("RESOLUME_SLICES_XML", "")),
+        audit_log_path=_parse_audit_log_path(),
     )
     config.check_host_allowed()
     return config
