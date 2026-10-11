@@ -2351,48 +2351,36 @@ async def prepare_playback(
 
 @mcp.tool(annotations=_WRITE)
 async def select_clips(layer_index: int, clip_indices_json: str) -> str:
-    """Select several clips on one layer; clip_indices_json is a JSON array. Not live-verified."""
+    """Select clips on one layer in turn; clip_indices_json is a JSON array. Resolume keeps one clip selected, so the last one ends selected."""
     clip_indices = _parse_json_list(clip_indices_json, field_name="clip_indices_json")
     results: list[dict[str, Any]] = []
     client = _client()
     for clip_index in clip_indices:
-        response = await client.websocket_action(
-            "set",
-            f"/composition/layers/{layer_index}/clips/{clip_index}/selected",
-            value=True,
-        )
+        response = await client.request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/select")
         results.append({"layer_index": layer_index, "clip_index": clip_index, "response": response})
     return _json_response({"results": results})
 
 
 @mcp.tool(annotations=_WRITE)
 async def select_layers(layer_indices_json: str) -> str:
-    """Select several layers; layer_indices_json is a JSON array. Not live-verified."""
+    """Select layers in turn; layer_indices_json is a JSON array. Resolume keeps one layer selected, so the last one ends selected."""
     layer_indices = _parse_json_list(layer_indices_json, field_name="layer_indices_json")
     results: list[dict[str, Any]] = []
     client = _client()
     for layer_index in layer_indices:
-        response = await client.websocket_action(
-            "set",
-            f"/composition/layers/{layer_index}/selected",
-            value=True,
-        )
+        response = await client.request("POST", f"/composition/layers/{layer_index}/select")
         results.append({"layer_index": layer_index, "response": response})
     return _json_response({"results": results})
 
 
 @mcp.tool(annotations=_WRITE)
 async def select_columns(column_indices_json: str) -> str:
-    """Select several columns; column_indices_json is a JSON array. Not live-verified."""
+    """Select columns in turn; column_indices_json is a JSON array. Resolume keeps one column selected, so the last one ends selected."""
     column_indices = _parse_json_list(column_indices_json, field_name="column_indices_json")
     results: list[dict[str, Any]] = []
     client = _client()
     for column_index in column_indices:
-        response = await client.websocket_action(
-            "set",
-            f"/composition/columns/{column_index}/selected",
-            value=True,
-        )
+        response = await client.request("POST", f"/composition/columns/{column_index}/select")
         results.append({"column_index": column_index, "response": response})
     return _json_response({"results": results})
 
@@ -2892,12 +2880,8 @@ async def select_group_column(group_index: int, column_index: int) -> str:
 
 @mcp.tool(annotations=_WRITE)
 async def select_clip(layer_index: int, clip_index: int) -> str:
-    """Select a clip via WebSocket set on its 'selected' path. Not live-verified."""
-    result = await _client().websocket_action(
-        "set",
-        f"/composition/layers/{layer_index}/clips/{clip_index}/selected",
-        value=True,
-    )
+    """Select a clip (does not trigger it)."""
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/clips/{clip_index}/select")
     return _json_response(result)
 
 
@@ -3005,23 +2989,15 @@ async def clear_composition(confirm_destructive: bool = False) -> str:
 
 @mcp.tool(annotations=_WRITE)
 async def select_layer(layer_index: int) -> str:
-    """Select a layer via WebSocket set on its 'selected' path. Not live-verified."""
-    result = await _client().websocket_action(
-        "set",
-        f"/composition/layers/{layer_index}/selected",
-        value=True,
-    )
+    """Select a layer."""
+    result = await _client().request("POST", f"/composition/layers/{layer_index}/select")
     return _json_response(result)
 
 
 @mcp.tool(annotations=_WRITE)
 async def select_column(column_index: int) -> str:
-    """Select a column via WebSocket set on its 'selected' path. Not live-verified."""
-    result = await _client().websocket_action(
-        "set",
-        f"/composition/columns/{column_index}/selected",
-        value=True,
-    )
+    """Select a column (does not trigger it)."""
+    result = await _client().request("POST", f"/composition/columns/{column_index}/select")
     return _json_response(result)
 
 

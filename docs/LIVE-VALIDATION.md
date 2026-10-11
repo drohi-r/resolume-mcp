@@ -118,3 +118,19 @@ Scope note:
 - Selected layergroup and group-column endpoints are still not exposed on this build:
   - `/api/v1/composition/layergroups/selected`
   - `/api/v1/composition/layergroups/{group}/columns/{column}`
+
+## Windows, Arena 7.23.2 (2026-10-12)
+
+Run of `scripts/live_probe.py --write-checks` against the AvoidRafa Live composition (24 layers, nothing playing; opacity and selection were restored afterwards, nothing was saved).
+
+- All REST reads in the probe return `200`, including `/composition/layers/selected` and `/composition/clips/selected`.
+- WebSocket `get` on `/parameter/by-id/{id}` is answered with a message whose `path` is the plain parameter path (`/composition/layers/1/video/opacity`), not the by-id path. The client matches replies on the numeric `id`, so `get` and watch replies are matched with no timeouts or skipped messages. The bootstrap is 3 messages.
+- A single WebSocket `set` is delivered even though the connection closes right after sending: layer 1 opacity `1.0 -> 0.5 -> 1.0` verified by REST read-back each time.
+- Selection:
+  - WebSocket `set` on `<path>/selected` with `true` does **not** move the selection. `selected` is a `ParamTrigger`, not a boolean.
+  - REST `POST <path>/select` moves it for layers, clips and columns, returns `204`, and does not trigger the clip or column.
+  - WebSocket `trigger` on `/composition/{layers|clips}/by-id/{id}/select` also works.
+  - The `select_layer`, `select_clip`, `select_column` and batch `select_*` tools now use REST `POST <path>/select` and were rechecked live.
+- Columns expose `selected` in their payload (`/composition/columns/{n}` and the embedded `/composition` columns), so column selection can be read back.
+- Still `404`, same as the macOS build: the `/composition/layers`, `/composition/columns`, `/composition/layergroups` and `/composition/layers/1/clips` collections, and the Advanced Output candidates `/advancedoutput`, `/advancedoutput/screens`, `/output`, `/screens`.
+- Inconclusive here: `/composition/layergroups/selected` and `/composition/layergroups/1/columns/1` returned `404`, but this composition has no layer groups; `/composition/layers/1/clips/active` returned `404`, but no clip was playing.

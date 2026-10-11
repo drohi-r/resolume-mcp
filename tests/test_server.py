@@ -659,52 +659,114 @@ async def test_prepare_playback(mock_client_factory):
     assert payload["results"][2]["action"] == "prepare_multiple_layers"
 
 
-@pytest.mark.asyncio
-@patch("resolume_mcp.server._client")
-async def test_select_clips(mock_client_factory):
-    from resolume_mcp.server import select_clips
+def _select_fake():
+    # Arena 7.23.2 ignores a WebSocket set on '<path>/selected' ('selected' is a ParamTrigger); only POST '<path>/select' moves the selection.
+    async def request(method, path, **_):
+        return {"method": method, "path": f"/api/v1{path}", "url": f"http://127.0.0.1:8080/api/v1{path}", "status_code": 204, "ok": True, "content_type": "", "body": None}
+
+    async def websocket_action(action, parameter, value=None, **_):
+        return {"url": "ws://127.0.0.1:8080/api/v1", "request": {"action": action, "parameter": parameter, "value": value}, "response": None, "bootstrap_message_count": 3}
 
     fake = MagicMock()
-    fake.websocket_action = AsyncMock(side_effect=[
-        {"request": {"parameter": "/composition/layers/1/clips/2/selected", "value": True}},
-        {"request": {"parameter": "/composition/layers/1/clips/3/selected", "value": True}},
-    ])
+    fake.request = AsyncMock(side_effect=request)
+    fake.websocket_action = AsyncMock(side_effect=websocket_action)
+    return fake
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_select_clip_posts_select(mock_client_factory):
+    from resolume_mcp.server import select_clip
+
+    fake = _select_fake()
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await select_clip(1, 2))
+    fake.request.assert_awaited_once_with("POST", "/composition/layers/1/clips/2/select")
+    fake.websocket_action.assert_not_awaited()
+    assert payload["status_code"] == 204
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_select_layer_posts_select(mock_client_factory):
+    from resolume_mcp.server import select_layer
+
+    fake = _select_fake()
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await select_layer(3))
+    fake.request.assert_awaited_once_with("POST", "/composition/layers/3/select")
+    fake.websocket_action.assert_not_awaited()
+    assert payload["status_code"] == 204
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_select_column_posts_select(mock_client_factory):
+    from resolume_mcp.server import select_column
+
+    fake = _select_fake()
+    mock_client_factory.return_value = fake
+
+    payload = json.loads(await select_column(4))
+    fake.request.assert_awaited_once_with("POST", "/composition/columns/4/select")
+    fake.websocket_action.assert_not_awaited()
+    assert payload["status_code"] == 204
+
+
+@pytest.mark.asyncio
+@patch("resolume_mcp.server._client")
+async def test_select_clips_posts_select_for_each_clip(mock_client_factory):
+    from resolume_mcp.server import select_clips
+
+    fake = _select_fake()
     mock_client_factory.return_value = fake
 
     payload = json.loads(await select_clips(1, "[2,3]"))
-    assert len(payload["results"]) == 2
+    assert [c.args for c in fake.request.await_args_list] == [
+        ("POST", "/composition/layers/1/clips/2/select"),
+        ("POST", "/composition/layers/1/clips/3/select"),
+    ]
+    fake.websocket_action.assert_not_awaited()
+    assert [(r["clip_index"], r["response"]["path"]) for r in payload["results"]] == [
+        (2, "/api/v1/composition/layers/1/clips/2/select"),
+        (3, "/api/v1/composition/layers/1/clips/3/select"),
+    ]
 
 
 @pytest.mark.asyncio
 @patch("resolume_mcp.server._client")
-async def test_select_layers(mock_client_factory):
+async def test_select_layers_posts_select_for_each_layer(mock_client_factory):
     from resolume_mcp.server import select_layers
 
-    fake = MagicMock()
-    fake.websocket_action = AsyncMock(side_effect=[
-        {"request": {"parameter": "/composition/layers/1/selected", "value": True}},
-        {"request": {"parameter": "/composition/layers/2/selected", "value": True}},
-    ])
+    fake = _select_fake()
     mock_client_factory.return_value = fake
 
     payload = json.loads(await select_layers("[1,2]"))
-    assert len(payload["results"]) == 2
+    assert [c.args for c in fake.request.await_args_list] == [
+        ("POST", "/composition/layers/1/select"),
+        ("POST", "/composition/layers/2/select"),
+    ]
+    fake.websocket_action.assert_not_awaited()
+    assert [r["layer_index"] for r in payload["results"]] == [1, 2]
 
 
 @pytest.mark.asyncio
 @patch("resolume_mcp.server._client")
-async def test_select_columns(mock_client_factory):
+async def test_select_columns_posts_select_for_each_column(mock_client_factory):
     from resolume_mcp.server import select_columns
 
-    fake = MagicMock()
-    fake.websocket_action = AsyncMock(side_effect=[
-        {"request": {"parameter": "/composition/columns/4/selected", "value": True}},
-        {"request": {"parameter": "/composition/columns/5/selected", "value": True}},
-    ])
+    fake = _select_fake()
     mock_client_factory.return_value = fake
 
     payload = json.loads(await select_columns("[4,5]"))
-    assert len(payload["results"]) == 2
+    assert [c.args for c in fake.request.await_args_list] == [
+        ("POST", "/composition/columns/4/select"),
+        ("POST", "/composition/columns/5/select"),
+    ]
+    fake.websocket_action.assert_not_awaited()
+    assert [r["column_index"] for r in payload["results"]] == [4, 5]
 
 
 @pytest.mark.asyncio
